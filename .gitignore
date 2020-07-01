@@ -2,4 +2,9 @@
 .Rhistory
 .RData
 .Ruserdata
+<<<<<<< HEAD
 *.Rproj
+=======
+*.Rproj
+Methods_Comp_Scratchwork.R
+>>>>>>> 8fea37a0528b50d249ba757b5170d36a5dcd0195
