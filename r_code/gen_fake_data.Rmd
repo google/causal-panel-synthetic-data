@@ -10,7 +10,7 @@ output:
      code_folding: hide
      code_download: true
 params:
-   n_seeds: 100
+   n_seeds: 1
    A: true
    B: true
    C: true
@@ -505,7 +505,7 @@ gen_data <-
 
 ```{r A}
 if(params$A){
-  no_effect <- future_map_dfr(.x = seeds, .f = ~gen_data(N = 1500, prop_treated = 0.8, tau_one_zero = 0.0, gamma = 0.0, rho_y = 0.7, N_time = 24, type = "observables", seed = .x))
+  no_effect <- future_map_dfr(.x = seeds, .f = ~gen_data(N = 800, prop_treated = 0.8, tau_one_zero = 0.0, gamma = 0.0, rho_y = 0.7, N_time = 24, type = "observables", seed = .x))
 
   for(i in 1:n_seeds){
     readr::write_csv(x = no_effect$data[[i]], 
