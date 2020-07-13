@@ -6,7 +6,7 @@
 library(here)
 #still an issue about where you open from -- if the file itself in r_code, then don't need the r_code part.
 source(here("/r_code/causal_panel_benchmark_functions_v2.R"))
-
+source(here("/r_code/placebo_creation.R"))
 
 set.seed(42)
 
@@ -24,24 +24,24 @@ library(tictoc)
 # names(data_list)=list.files(pattern = "^synthetic_data_v.*csv$")
 
 
-data_list <-list.files(here("Data/"), pattern = "^synthetic_data_med.*csv$") %>% paste(here(),"/Data/",., sep="") %>%
-  lapply(.,read_csv) %>% map(., ~ (.x %>% dplyr::select(-X1))) %>%
-  map(., ~ (.x %>% mutate(period=case_when(
-    min(period)==0~period+1,
-    TRUE~period
-  ))  )) %>% map(~clean_names(.))
-#Rename the list so that each element (df) is labelled properly
-names(data_list)=list.files(pattern = "^synthetic_data_med.*csv$")
-
-
-# data_list <-list.files(here("Data/"), pattern = "^synthetic_data_small.*csv$") %>% paste(here(),"/Data/",., sep="") %>%
-#   lapply(.,read_csv) %>% map(., ~ (.x %>% dplyr::select(-X1))) %>% 
+# data_list <-list.files(here("Data/"), pattern = "^synthetic_data_med.*csv$") %>% paste(here(),"/Data/",., sep="") %>%
+#   lapply(.,read_csv) %>% map(., ~ (.x %>% dplyr::select(-X1))) %>%
 #   map(., ~ (.x %>% mutate(period=case_when(
 #     min(period)==0~period+1,
 #     TRUE~period
 #   ))  )) %>% map(~clean_names(.))
 # #Rename the list so that each element (df) is labelled properly
-# names(data_list)=list.files(pattern = "^synthetic_data_small.*csv$")
+# names(data_list)=list.files(pattern = "^synthetic_data_med.*csv$")
+
+
+data_list <-list.files(here("Data/"), pattern = "^synthetic_data_small.*csv$") %>% paste(here(),"/Data/",., sep="") %>%
+  lapply(.,read_csv) %>% map(., ~ (.x %>% dplyr::select(-X1))) %>%
+  map(., ~ (.x %>% mutate(period=case_when(
+    min(period)==0~period+1,
+    TRUE~period
+  ))  )) %>% map(~janitor::clean_names(.))
+#Rename the list so that each element (df) is labelled properly
+names(data_list)=list.files(pattern = "^synthetic_data_small.*csv$")
 
 
 ################################################

@@ -97,42 +97,24 @@ matching_without_replacement <- function(treated_block, control_block, id_var, t
   placebo_treat_period <- treated_block %>% pull(!!as.name(treat_period))
   treatment_unit <- treated_block %>% pull(!!as.name(id_var))
   for (i in seq_len(nrow(treated_block))) {
-    if (i == 1) {
-      # if we are searching for the match of our first treated unit, we can search across all donors
-      temp_match <- nearest_ts_euclidean(
-        treated_block %>%
-          slice(i) %>%
-          dplyr::select(-c(
-            !!as.name(id_var),
-            !!as.name(treat_period)
-          )),
-        control_block %>%
-          dplyr::select(-!!as.name(id_var))
-      )
-      already_matched[i] <- control_block %>%
-        slice(temp_match) %>%
-        pull(!!as.name(id_var))
-    }
-
-    if (i != 1) {
-      # If we have already found a match, restrict the search for future matches to the subset of currently unmatched donors
-      temp_match <- nearest_ts_euclidean(treated_block %>%
-                                           slice(i) %>%
-                                           dplyr::select(-c(!!as.name(id_var), !!as.name(treat_period))),
-                                         control_block %>%
-        filter(!!as.name(id_var) %in% setdiff(!!as.name(id_var), already_matched)) %>% 
-          dplyr::select(-!!as.name(id_var)))
-
-      already_matched[i] <- control_block %>%
-        filter(!!as.name(id_var) %in% setdiff(!!as.name(id_var), already_matched)) %>%
-        slice(temp_match) %>%
-        pull(!!as.name(id_var))
-    }
+    # If we have already found a match, restrict the search for future matches to the subset of currently unmatched donors
+    temp_match <- nearest_ts_euclidean(treated_block %>%
+                                         slice(i) %>%
+                                         dplyr::select(-c(
+                                           !!as.name(id_var), 
+                                           !!as.name(treat_period))),
+                                       control_block %>%
+                                         filter(!!as.name(id_var) %in% setdiff(!!as.name(id_var), already_matched)) %>% 
+                                         dplyr::select(-!!as.name(id_var)))
+    
+    already_matched[i] <- control_block %>%
+      filter(!!as.name(id_var) %in% setdiff(!!as.name(id_var), already_matched)) %>%
+      slice(temp_match) %>%
+      pull(!!as.name(id_var))
   }
   # Store the resulting vectors in a dataframe for output
-  df_toreturn <- data.frame(temp_id = already_matched, temp_treattime = placebo_treat_period, Treatment_Unit = treatment_unit)
-  df_toreturn <- df_toreturn %>% rename(!!as.name(id_var) := temp_id, !!as.name(treat_period) := temp_treattime)
-  return(df_toreturn)
+  df_toreturn <- tibble(temp_id = already_matched, temp_treattime = placebo_treat_period, Treatment_Unit = treatment_unit)
+  return(df_toreturn %>% rename(!!as.name(id_var) := temp_id, !!as.name(treat_period) := temp_treattime))
 }
 
 
