@@ -876,7 +876,48 @@ gen_data_lubr <-function(N = 500,  date_start="2020-03-04",
 
 
 #Aggregate per week, month, quarter grouping by year/month/week, year/month, year/Quarter (quarter())
+aggregate_data_by_date<-function(disagg_data, to="monthly", from="daily"){
+  
+  date_levels=factor(c("daily", "weekly", "monthly", "yearly"), ordered = T, levels =c("daily", "weekly", "monthly", "yearly") )
+  #if no aggregation is happening, break
+  stopifnot(match.arg(to,date_levels)>match.arg(from,date_levels))
+  
+  agg_ids=c("day_num", "week_num", "month_num", "year_num")
+  
+  #Identify the larger dates
+  to_ind=match(to,date_levels)
+  to_vars=agg_ids[seq(to_ind, length(agg_ids))]
+  
+  new_date_name=paste0(to, "_date_end", sep="")
+  agg_data=disagg_data %>% group_by_at(c("entry",to_vars)) %>%
+    summarise(new_pitches=sum(new_pitches), total_pitches=sum(total_pitches),
+              counter_factual=sum(counter_factual), target=sum(target),
+              !!as.name(new_date_name):=max(date_t),
+              treatperiod_0=max(treatperiod_0)
+              ) %>% ungroup() 
+  
+  agg_data=agg_data %>% 
+    mutate(period=agg_data %>% group_by_at(to_vars) %>% select(tidyselect::all_of(to_vars)) %>% group_indices()) 
+  
+  agg_data_covariates=agg_data %>% inner_join(
+    disagg_data %>% select(-c(period, date_t, Treatment_Period, 
+                              treatperiod_0, post_treat_t, 
+                              r, date_shock, setdiff(agg_ids,to_vars),
+                              new_pitches, total_pitches,
+                              counter_factual, target)) %>%
+      distinct_at(c("entry",to_vars), .keep_all = T), 
+    by=c("entry", to_vars)
+  ) %>% group_by(entry) %>%
+    mutate(Treatment_Period=case_when(
+      treated==0~NA_real_,
+      treated==1~(length(treatperiod_0)-sum(treatperiod_0)+1)
+    ),
+    post_treat_t=period-Treatment_Period) 
+  
+  return(agg_data_covariates)
 
+  
+}
 
 
 
