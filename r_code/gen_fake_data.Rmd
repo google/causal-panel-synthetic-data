@@ -1,0 +1,549 @@
+---
+title: "Generate Fake Data"
+date: "`r Sys.Date()`"
+output: 
+   html_document:
+     toc: true
+     toc_float:
+       collapsed: false
+       smooth_scroll: false
+     code_folding: hide
+     code_download: true
+params:
+   n_seeds: 100
+   A: true
+   B: true
+   C: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r config}
+library(dplyr)
+library(furrr)
+plan(multiprocess)
+set.seed(1982)
+n_seeds <- params$n_seeds
+seeds <- sample(1000:9999, size = n_seeds)
+```
+
+
+```{r gen_data_func}
+gen_data <-
+  function(N = 800,
+           tau_one_zero = 0.02,
+           gamma = 0.0009,
+           seed = 1982,
+           prop_treated = 1,
+           rho_y = 0.2,
+           N_time = 12,
+           type = c("random", "observables")) {
+    set.seed(seed)
+    if (missing(type)) {
+      type <- "random"
+    } else{
+      type <- match.arg(type)
+    }
+    
+    stopifnot(prop_treated > 0 & prop_treated <= 1)
+    
+    # Generate time-invariant covariates
+    
+    Sigma <- matrix(c(10, 3, 3, 2), 2, 2)
+    vs <- MASS::mvrnorm(n = N, rep(0, 2), Sigma)
+    v3 <- rbeta(n = N,
+                shape1 = 2,
+                shape2 = 2)
+    v4 <- rbinom(n = N, size = 10, prob = 0.2)
+    v5 <- matrix(rnorm(N * 20), N, 20)
+    colnames(v5) <- glue::glue("v{5:24}")
+    xs <- cbind(vs, v3, v4, v5)
+    colnames(xs) <- glue::glue("v{1:24}")
+    xs <- as_tibble(xs) %>%
+      mutate(division_country = 1:N)
+    
+    # Vertical
+    
+    vertical_re <-
+      structure(
+        list(
+          vertical = c("A", "B", "C", "D", "E", "F", "G",
+                       "H", "I", "J", "K", "L"),
+          p = c(
+            0.0629,
+            0.039,
+            0.0343,
+            0.1943,
+            0.0848,
+            0.0895,
+            0.12,
+            0.0343,
+            0.2352,
+            0.001,
+            0.0619,
+            0.0428
+          ),
+          vertical_re = c(
+            `vertical[1]` = 0.2212,
+            `vertical[2]` = -0.3044,
+            `vertical[3]` = 0.3183,
+            `vertical[4]` = -0.6042,
+            `vertical[5]` = -0.0863,
+            `vertical[6]` = 0.5209,
+            `vertical[7]` = -0.3082,
+            `vertical[8]` = -0.0151,
+            `vertical[9]` = 0.0912,
+            `vertical[10]` = 0.0544,
+            `vertical[11]` = 0.2699,
+            `vertical[12]` = -0.1517
+          )
+        ),
+        class = c("tbl_df", "tbl", "data.frame"),
+        row.names = c(NA,-12L)
+      )
+    
+    verticalxwalk <- tibble(
+      division_country = 1:N,
+      vertical = sample(
+        x = LETTERS[1:12],
+        size = N,
+        replace = TRUE,
+        prob = vertical_re$p
+      )
+    )
+    
+    xs <- inner_join(xs, verticalxwalk, by = "division_country") %>%
+      inner_join(vertical_re, by = "vertical") %>%
+      mutate(v25 = case_when(vertical == "E" ~ -3.1,
+                             vertical == "K" ~ -2.02,
+                             TRUE ~ 0)) %>%
+      select(-vertical,-p,-vertical_re)
+    
+    # Treatment
+    if (type == "random") {
+      treated <- tibble(
+        division_country = 1:N,
+        treated = sample(
+          x = c(0, 1),
+          size = N,
+          prob = c(1 - prop_treated, prop_treated),
+          replace = TRUE
+        )
+      )
+    } else{
+      z <- xs %>%
+        select(-division_country,
+               -v2,
+               -v4,-v7,
+               -v10,
+               -v15,
+               -v17,-v20,
+               -v21,
+               -v24) %>%
+        as.matrix()
+      
+      beta <- rnorm(n = ncol(z),
+                    mean = 0,
+                    sd = 1)
+      
+      zbeta <- z %*% beta
+      
+      colnames(zbeta) <- 'zbeta'
+      
+      p <- zbeta %>% as_tibble() %>%
+        mutate(p = 1 / (1 + exp(zbeta)))
+      
+      
+      while (abs(mean(p$p) - prop_treated) > 0.0001) {
+        add_p <- prop_treated - mean(p$p)
+        p <- p %>% rowwise() %>%
+          mutate(p = min(1, p + add_p))
+      }
+      treated <- p %>%
+        ungroup() %>%
+        mutate(
+          u = runif(n = N, min = 0, max = 1),
+          treated = case_when(p > u ~ 1,
+                              p <= u ~ 0),
+          division_country = 1:N
+        ) %>%
+        select(division_country, treated)
+    }
+    
+    
+    N_treated <- sum(treated$treated)
+    N_control <- N - N_treated
+    
+    first_period <-
+      tibble(division_country = 1:N,
+             first = sample(
+               x = 5:(N_time - 5),
+               size = N,
+               replace = TRUE
+             )) %>%
+      inner_join(treated, by = "division_country") %>%
+      mutate(first = case_when(treated == 1 ~ first,
+                               TRUE ~ 9999L)) %>%
+      select(-treated)
+    
+    
+    
+    
+    # a_i
+    
+    a <- tibble(division_country = 1:N,
+                a_i = rnorm(n = N, mean = 0.1748,
+                            sd = 1.4678))
+    #
+    fake_data <-
+      inner_join(a, verticalxwalk, by = "division_country") %>%
+      inner_join(vertical_re, by = "vertical") %>%
+      inner_join(treated, by = "division_country")
+    
+    # d_it
+    
+    time_grid <-
+      tidyr::expand_grid(time = 1:N_time,
+                         division_country = fake_data$division_country)
+    
+    mu_d = 0.01
+    
+    ## countries
+    
+    countries <- structure(
+      list(
+        country = 1:9,
+        country_re = c(
+          -0.9231,
+          0.3533,
+          0.6499,
+          -0.0572,
+          -1.1556,
+          -0.8078,
+          0.4037,
+          0.0955,
+          1.434
+        ),
+        p = c(
+          0.0457,
+          0.1019,
+          0.1038,
+          0.0067,
+          0.0124,
+          0.0152,
+          0.0305,
+          0.0048,
+          0.679
+        )
+      ),
+      class = c("tbl_df", "tbl", "data.frame"),
+      row.names = c(NA,-9L)
+    )
+    
+    N_countries <- length(countries$country)
+    
+    
+    
+    countryxwalk <- tibble(
+      division_country = 1:N,
+      country = sample(
+        x = countries$country,
+        size = N,
+        replace = TRUE,
+        prob = countries$p
+      )
+    )
+    
+    fake_data <-
+      inner_join(fake_data, countryxwalk, by = "division_country") %>%
+      select(-p) %>%
+      inner_join(countries, by = "country") %>%
+      select(-p) %>%
+      inner_join(time_grid, by = "division_country")
+    
+    
+    ## Time
+    
+    time_re <-
+      tibble(time = 1:N_time,
+             time_re = rnorm(n = N_time, mean = 0, sd = 0.141))
+    
+    fake_data <- inner_join(fake_data, time_re, by = "time")
+    
+    
+    
+    # time country interaction
+    
+    N_countries <- length(countries$country)
+    
+    time_country_grid <-
+      tidyr::expand_grid(country = 1:N_countries, time = 1:N_time)
+    
+    r_one <-
+      tibble(
+        country  = 1:N_countries,
+        time = 1,
+        r = rnorm(n = N_countries, mean = 0, sd = 1)
+      )
+    
+    
+    r <-
+      full_join(time_country_grid, r_one, by = c("country", "time")) %>%
+      group_by(country)
+    
+    for (t in 2:N_time) {
+      for (c in 1:N_countries) {
+        r$r[r$time == t &
+              r$country == c] = r$r[r$time == (t - 1) &
+                                      r$country == c] + rnorm(n = 1, mean = 0, sd = 0.1)
+      }
+    }
+    
+    fake_data <- inner_join(fake_data, r, by = c("country", "time"))
+    
+    ## pitches
+    
+    fake_data <-
+      inner_join(fake_data, first_period, by = "division_country") %>%
+      mutate(m = time - first)
+    
+    tau_one <- rep(NA, max(fake_data$m + 1))
+    
+    for (m in 1:max(fake_data$m + 1)) {
+      if (m == 1) {
+        tau_one[m] <- tau_one_zero
+      } else{
+        tau_one[m] <- tau_one[m - 1] * 0.9
+      }
+    }
+    
+    tau <- tibble(m = 0:max(fake_data$m),
+                  tau_one = tau_one)
+    
+    fake_data <- fake_data %>%
+      mutate(new_pitches = 0,
+             total_pitches = 0)
+    
+    for (t in 1:N_time) {
+      for (i in 1:N) {
+        if (fake_data$m[fake_data$division_country == i &
+                        fake_data$time == t] < 0) {
+          fake_data$new_pitches[fake_data$division_country == i &
+                                  fake_data$time == t] <- 0
+        } else{
+          fake_data$new_pitches[fake_data$division_country == i &
+                                  fake_data$time == t] <- rbinom(n = 1,
+                                                                 size = 10,
+                                                                 prob = 0.5)
+        }
+        
+        if (fake_data$m[fake_data$division_country == i &
+                        fake_data$time == t] == 0) {
+          fake_data$total_pitches[fake_data$division_country == i &
+                                    fake_data$time == t] <-
+            fake_data$new_pitches[fake_data$division_country == i &
+                                    fake_data$time == t]
+        } else if (fake_data$m[fake_data$division_country == i &
+                               fake_data$time == t] > 0) {
+          fake_data$total_pitches[fake_data$division_country == i &
+                                    fake_data$time == t] <-
+            fake_data$total_pitches[fake_data$division_country == i &
+                                      fake_data$time == t - 1] +
+            fake_data$new_pitches[fake_data$division_country == i &
+                                    fake_data$time == t]
+        }
+        
+        
+      }
+    }
+    
+    fake_data <- fake_data %>%
+      mutate(total_pitches = case_when(treated == 1 ~ total_pitches,
+                                       TRUE ~ 0))
+    
+    
+    
+    # beta_i
+    
+    beta <- tibble(division_country = 1:N,
+                   beta_i = rnorm(n = N, mean = 0,
+                                  sd = 0.07789))
+    
+    fake_data <-
+      inner_join(fake_data, beta, by = c("division_country"))
+    
+    
+    
+    # Initial y
+    sd_e <-  0.5929
+    sd_0 <- sd_e / (sqrt(1 - rho_y ^ 2))
+    
+    y0 <- fake_data %>%
+      filter(time == 1) %>%
+      mutate(
+        mu_i_zero = a_i + vertical_re + r + beta_i,
+        y_0 = rnorm(n = N, mean = mu_i_zero, sd = sd_0)
+      ) %>%
+      select(division_country, y_0)
+    
+    
+    m_matrix <- fake_data %>%
+      select(division_country, time, m) %>%
+      tidyr::pivot_wider(names_from = time, values_from = m) %>%
+      select(-division_country) %>%
+      as.matrix()
+    
+    # y matrix without treatment
+    
+    
+    u <- fake_data %>%
+      mutate(mu_i_t = a_i + vertical_re + r + beta_i * time) %>%
+      select(division_country, time, mu_i_t) %>%
+      tidyr::pivot_wider(names_from = time, values_from = mu_i_t) %>%
+      select(-division_country) %>%
+      as.matrix()
+    
+    y_t0 <- matrix(nrow = N, ncol = N_time)
+    y_t0[, 1] <- y0$y_0
+    
+    y_t1 <- y_t0
+    
+    total_pitches_matrix <- fake_data %>%
+      select(division_country, time, total_pitches) %>%
+      tidyr::pivot_wider(names_from = time, values_from = total_pitches) %>%
+      select(-division_country) %>%
+      as.matrix()
+    
+    for (i in 1:N) {
+      for (t in 2:N_time) {
+        mu_it <- rho_y * (y_t0[i, (t - 1)] - u[i, (t - 1)]) +
+          u[i, t]
+        y_t0[i, t] <- rnorm(n = 1, mean = mu_it, sd = sd_e)
+        
+        if (m_matrix[[i, t]] >= 0 & total_pitches_matrix[[i, t]] > 0) {
+          #stop(total_pitches_matrix[i,t]<=0)
+          y_t1[i, t] = y_t0[i, t] +
+            tau_one[m_matrix[i, t] + 1] +
+            gamma * log(total_pitches_matrix[i, t])
+        } else{
+          y_t1[i, t] = y_t0[i, t]
+        }
+      }
+    }
+    
+    
+    colnames(y_t1)  <- colnames(y_t0) <- 1:N_time
+    
+    y_t0_long <- as_tibble(y_t0) %>%
+      mutate(division_country = 1:N) %>%
+      tidyr::pivot_longer(names_to = 'time', cols = -division_country) %>%
+      mutate(time = as.integer(time)) %>%
+      rename(y0 = value)
+    
+    y_t1_long <- as_tibble(y_t1) %>%
+      mutate(division_country = 1:N) %>%
+      tidyr::pivot_longer(names_to = 'time', cols = -division_country) %>%
+      mutate(time = as.integer(time)) %>%
+      rename(y1 = value)
+    
+    y_long <-
+      inner_join(y_t0_long, y_t1_long, by = c("division_country", "time"))
+    
+    fake_data <-
+      inner_join(fake_data, y_long, by = c("division_country", "time")) %>%
+      mutate(y = case_when(treated == 1 ~ y1 ,
+                           treated == 0 ~ y0))  %>%
+      mutate(y0 = exp(y0) * 1000,
+             y1 = exp(y1) * 1000,
+             y = exp(y) * 1000)
+    
+    # True lift
+    
+    q1 <- fake_data %>%
+      filter(m %in% c(0, 1, 2),
+             treated == 1)
+    
+    
+    sum_y0 <- sum(q1$y0)
+    sum_y1 <- sum(q1$y1)
+    
+    true_lift <- (sum_y1 / sum_y0) - 1
+    
+    ## Output data
+    
+    xs <- xs %>%
+      select(-v25)
+    
+    synthetic_data <- fake_data %>%
+      dplyr::select(division_country,
+                    time,
+                    treated,
+                    country,
+                    vertical,
+                    total_pitches,
+                    y)  %>%
+      inner_join(xs, by = "division_country")
+    
+    my_fake_data <- synthetic_data %>% mutate(
+      true_lift = true_lift,
+      N = N,
+      tau_one_zero = tau_one_zero,
+      gamma = gamma,
+      seed = seed,
+      prop_treated = mean(synthetic_data$treated),
+      rho_y = rho_y
+    ) %>%
+      tidyr::nest(data = -c(true_lift, tau_one_zero, gamma, N, seed, prop_treated, rho_y))
+    
+  }
+```
+
+# A: No effect
+
+```{r A}
+if(params$A){
+  no_effect <- future_map_dfr(.x = seeds, .f = ~gen_data(N = 1500, prop_treated = 0.8, tau_one_zero = 0.0, gamma = 0.0, rho_y = 0.7, N_time = 24, type = "observables", seed = .x))
+  for(i in 1:n_seeds){
+    readr::write_csv(x = no_effect$data[[i]], 
+                     path = glue::glue('./A/synthetic_data_A_{stringr::str_pad(string = as.character(i), pad="0", width = 3)}.csv'))
+  }
+  
+  saveRDS(no_effect, './A/no_effect.RDS')
+}else{
+  no_effect <- readRDS('./A/no_effect.RDS')
+}
+no_effect
+```
+
+The mean true lift is `r scales::percent(mean(no_effect$true_lift))`.
+
+# B: Small gamma
+
+```{r small_gamma, eval=params$B}
+small_gamma <- future_map_dfr(.x = seeds, .f = ~gen_data(N = 1500, prop_treated = 0.8, tau_one_zero = 0.05, gamma = 0.0009, rho_y = 0.7, N_time = 24, type = "observables", seed = .x))
+for(i in 1:n_seeds){
+  readr::write_csv(x = small_gamma$data[[i]], 
+                   path = glue::glue('./B/synthetic_data_B_{stringr::str_pad(string = as.character(i), pad="0", width = 3)}.csv'))
+}
+saveRDS(small_gamma, './B/small_gamma.RDS')
+small_gamma
+```
+
+
+The mean true lift is `r scales::percent(mean(small_gamma$true_lift))`.
+
+# C: Bigger gamma
+
+```{r bigger_gamma, eval=params$C}
+bigger_gamma <- future_map_dfr(.x = seeds, .f = ~gen_data(N = 1500, prop_treated = 0.8, tau_one_zero = 0.05, gamma = 0.01, rho_y = 0.7, N_time = 24, type = "observables", seed = .x))
+for(i in 1:n_seeds){
+  readr::write_csv(x = bigger_gamma$data[[i]], 
+                   path = glue::glue('./C/synthetic_data_C_{stringr::str_pad(string = as.character(i), pad="0", width = 3)}.csv'))
+}
+saveRDS(bigger_gamma, './C/bigger_gamma.RDS')
+bigger_gamma
+```
+
+The mean true lift is `r scales::percent(mean(bigger_gamma$true_lift))`.
