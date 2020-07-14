@@ -1,3 +1,55 @@
+
+AA_data_re=gen_data(N = 800,  N_time = 60, treat_start=15,
+                    tau_one_zero = 0, tau_decay=0.9, gamma = 0.0009,
+                    seed = 1982, prop_treated = 0.5,  rho_y = 0.4, 
+                    type = c("random"))
+
+
+
+n_seeds <- 5
+seeds <- sample(1000:9999, size = n_seeds)
+
+AA_data_list <- future_map(.x = seeds, .f = ~gen_data(N = 800, prop_treated = 0.2, tau_one_zero = 0.0, gamma = 0.0, rho_y = 0.7, N_time = 100, type = "random", seed = .x))
+
+
+library(here)
+#still an issue about where you open from -- if the file itself in r_code, then don't need the r_code part.
+source(here("/r_code/panel_estimation.R"))
+source(here("r_code/treatment_effect_bootstrap.R"))
+source(here("r_code/analysis_metrics.R"))
+source(here("r_code/analysis_visualizations.R"))
+
+set.seed(42)
+
+library(tictoc) 
+tic()
+gsynth_ife_AA=future_pmap(list(AA_data_list, se_est=F), estimate_gsynth_series)
+toc()
+#get bootstrapped CIs, counterfactual effects
+gsynth_ife_bootstrapped_pct_att_AA=future_map(gsynth_ife_AA,compute_tot_se_jackknife,counterfac_var="counter_factual", stat_in="mean" )
+#store gap plots
+gsynth_ife_bootstrapped_pct_att_AA_plots=future_map(gsynth_ife_bootstrapped_pct_att_AA,create_gap_ci_plot,
+                                                    plot_title="Gsynth Mean ToT by Post Treat Period, Jackknife CI", plot_x_lab="Post Treat Period", plot_y_lab="Mean ToT",effect_var="jackknife_median_pct_tot", cf_var="median_pct_cf_tot")
+#compute MSE and MAE bu post period
+gsynth_ife_pct_metric_byT_AA=future_pmap(list(gsynth_ife_AA,  metric_str="both", pct_eff_flag=T),compute_avg_metric_per_t)
+#compute overall MSE, MAE
+gsynth_ife_pct_metric_AA=future_pmap(list(gsynth_ife_AA,  metric_str="both", pct_eff_flag=T),compute_avg_metric)
+#compute "coverage" -- not sure if that's exactly it, but the frac of time the true TE is in the bounds
+gsynth_ife_pct_coverage_AA=future_map(gsynth_ife_bootstrapped_pct_att_AA, compute_tot_coverage)
+
+
+
+
+
+
+
+
+
+
+
+
+
+#Attempt at Daily data
 gen_dataaktest <- function(N = 800, N_months = 60, T_freq = c("monthly", "weekly", "daily"), treat_start = 15,
                            tau_one_zero = 0.02, tau_decay = 0.9, gamma = 0.0009,
                            seed = 1982, prop_treated = 0.5, rho_y = 0.4,
@@ -276,8 +328,7 @@ gen_dataaktest <- function(N = 800, N_months = 60, T_freq = c("monthly", "weekly
   # create a tibble of unit, unit random effect,
   # unit vertical (with prob of assignment and the vertical Random Effect)
   # and unit ever treated status
-  fake_data <-
-    inner_join(a, verticalxwalk, by = "division_country") %>%
+  fake_data <-inner_join(a, verticalxwalk, by = "division_country") %>%
     inner_join(vertical_re, by = "vertical") %>%
     inner_join(treated, by = "division_country")
   
