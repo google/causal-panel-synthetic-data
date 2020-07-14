@@ -154,7 +154,7 @@ helper_first_period<-function(N_inp, N_time_inp,treat_start_inp, treated_tib){
          )) %>% 
     inner_join(treated_tib, by = "division_country") %>%
     mutate(first = case_when(treated == 1 ~ first,
-                             TRUE ~ 9999L)) %>%
+                             TRUE ~ NA_integer_)) %>%
     select(-treated))
 }
 
@@ -224,13 +224,13 @@ helper_country_t_re_gen<-function(N_countries_inp, N_time_inp){
   return(r)
 }
 
-
+#TODO(alexdkellogg): Treatment Effect and Decay adjustment by frequency
 helper_treatment_effect_seq<-function(fake_data_inp, tau_one_zero_inp, tau_decay_inp){
   #find the longest post treat period of pitch 1 for any unit in data
-  tau_one <- rep(NA, max(fake_data_inp$m + 1))
+  tau_one <- rep(NA, max(fake_data_inp$m + 1, na.rm = T))
   #define a treatment decay function: for period one, tau_one is an argument
   #then it decays by tau_decay*prior for each following period until the end of time
-  for (m in 1:max(fake_data_inp$m + 1)) {
+  for (m in seq_along(tau_one)) {
     if (m == 1) {
       tau_one[m] <- tau_one_zero_inp
     } else{
@@ -241,7 +241,9 @@ helper_treatment_effect_seq<-function(fake_data_inp, tau_one_zero_inp, tau_decay
   return(tau_one)
 }
 
-helper_num_pitches<-function(N_time_inp, N_inp, fake_data_inp){
+
+#TODO(alexdkellogg): Find an lapply/dplyr/more efficient way to do this
+helper_num_pitches<-function(N_time_inp, N_inp, T_freq_inp, fake_data_inp){
   
   fake_data_inp=fake_data_inp %>%
     mutate(new_pitches = 0,
@@ -249,8 +251,13 @@ helper_num_pitches<-function(N_time_inp, N_inp, fake_data_inp){
   #for each time and unit specific combination, we will create a variable for the number of
   #new pitches in that period (and a cumulative sum tracker)
   #no picthes happen until treatment, but a random amount happen every period after treatment
-  for (t in 1:N_time_inp) {
-    for (i in 1:N_inp) {
+  for (i in 1:N_inp) {
+    for (t in 1:N_time_inp) {
+      #if the m is NA for a given entry, it will always be NA so we move to next entry
+      if(is.na(fake_data_inp$m[fake_data_inp$division_country == i &
+                        fake_data_inp$time == t]) ){
+        break
+      }
       # if we are in the pre treatment periods (m<0), set pitches to 0
       if (fake_data_inp$m[fake_data_inp$division_country == i &
                       fake_data_inp$time == t] < 0) {
@@ -262,7 +269,11 @@ helper_num_pitches<-function(N_time_inp, N_inp, fake_data_inp){
         # if we are in the treatment period
         # assign a random number of pitches (number of heads out of 10 coin flips) + minimum of 1
         fake_data_inp$new_pitches[fake_data_inp$division_country == i &
-                                fake_data_inp$time == t] <- 1 + rbinom(n = 1, size = 10, prob = 0.5)
+                                fake_data_inp$time == t] <- 1 +
+          ifelse(T_freq_inp == "monthly", rbinom(n = 1, size = 10, prob = 0.5),
+                 ifelse(T_freq_inp == "weekly", rbinom(n = 1, size = 3, prob = 0.4),
+                        ifelse(T_freq_inp=="daily", rbernoulli(1, 2 / 9),
+                               rbinom(n = 1, size = 120, prob = 0.5)  )  ) )
         # if we are in the treatment period, total (cumulative pitches) is just the new pitched
         fake_data_inp$total_pitches[fake_data_inp$division_country == i &
                                   fake_data_inp$time == t] <-
@@ -272,7 +283,10 @@ helper_num_pitches<-function(N_time_inp, N_inp, fake_data_inp){
       else {
         # if in the post treat period, sample from the binomial without a min
         fake_data_inp$new_pitches[fake_data_inp$division_country == i &
-                                fake_data_inp$time == t] <- rbinom(n = 1, size = 10, prob = 0.5)
+                                fake_data_inp$time == t] <- ifelse(T_freq_inp == "monthly", rbinom(n = 1, size = 10, prob = 0.5),
+                                                                   ifelse(T_freq_inp == "weekly", rbinom(n = 1, size = 3, prob = 0.4),
+                                                                          ifelse(T_freq_inp=="daily", rbernoulli(1, 2 / 9),
+                                                                                 rbinom(n = 1, size = 120, prob = 0.5)  )  ) )
         
         # if we are in the proper post treat periods, we add the new pitches to the past cumulative sum
         fake_data_inp$total_pitches[fake_data_inp$division_country == i &
@@ -401,10 +415,61 @@ gen_time_constant_data <-function(N_inp, prop_treated_inp, type_inp) {
 
 
 
+helper_date_shocks<-function(T_freq_inp,date_start_inp,
+                             N_time_inp, time_constant_data){
+  #generate the sequence of dates depending on the frequency
+  period_dates=switch(T_freq_inp,
+                      "daily"=format(ymd(date_start_inp)+days(0:(N_time_inp-1))),
+                      "weekly"=format(ymd(date_start_inp)+weeks(0:(N_time_inp-1))),
+                      "monthly"=format(ymd(date_start_inp)+months(0:(N_time_inp-1))),
+                      "yearly"=format(ymd(date_start_inp)+years(0:(N_time_inp-1)))
+  )
+  
+  #Identidy the relevant components of the date (day/week/etc)
+  date_info_tib=switch (T_freq_inp,
+                        "daily" = tibble(time=seq_len(N_time_inp),
+                                         date_t=period_dates,
+                                         day_num=day(period_dates), 
+                                         week_num=week(period_dates),
+                                         month_num=month(period_dates), 
+                                         year_num=year(period_dates)),
+                        "weekly"=tibble(time=seq_len(N_time_inp),
+                                        date_t=period_dates,
+                                        week_num=week(period_dates),
+                                        month_num=month(period_dates), 
+                                        year_num=year(period_dates)),
+                        "monthly"=tibble(time=seq_len(N_time_inp),
+                                         date_t=period_dates,
+                                         month_num=month(period_dates), 
+                                         year_num=year(period_dates)),
+                        "yearly"=tibble(time=seq_len(N_time_inp),
+                                        date_t=period_dates,
+                                        year_num=year(period_dates))
+  )
+  
+  
+  date_time_grid=tidyr::expand_grid(time = seq_len(N_time_inp),
+                                    division_country = time_constant_data$division_country) %>%
+    inner_join(date_info_tib, by="time")
+  
+  
+  date_levels=factor(c("daily", "weekly", "monthly", "yearly"), ordered = T, levels =c("daily", "weekly", "monthly", "yearly") )
+  agg_ids=c("day_num", "week_num", "month_num", "year_num")
+  
+  #Identify the larger dates
+  freq_ind=match(T_freq_inp,date_levels)
+  freq_vars=agg_ids[seq(freq_ind, length(agg_ids))]
+  #define noise at each level, starting from daily, weekly, monthly, yearly
+  freq_sd=c(0.1,0.15, 0.2,0.25)
+  joint_sd=sum(freq_sd[seq(freq_ind,length(freq_sd))]**2)
+
+  return(date_time_grid %>% group_by_at(c(freq_vars)) %>%
+           mutate(date_shock=rnorm(1,0, joint_sd)))
+  
+}
 
 
-
-gen_time_varying_data<-function(time_constant_data,N_inp,  N_time_inp,
+gen_time_varying_data<-function(time_constant_data,N_inp,  N_time_inp, T_freq_inp,
                                 treat_start_inp, date_start_inp){
   
   #Generates tibble of long form panel data along with a number of x variables, the counterfactual outcome, and the target.
@@ -437,38 +502,11 @@ gen_time_varying_data<-function(time_constant_data,N_inp,  N_time_inp,
   #Output
   #placebo_df_long, a dataframe of the same format as data_full, but now entirely
   #consists of donor units, some of which are placebo-treated (based on matching).
-
-  if(!is.null(date_start_inp)){
-    period_dates=format(ymd(date_start_inp)+days(0:(N_time_inp-1)))
-    
-    treat_start_inp=interval(ymd(date_start_inp), ymd(treat_start_inp))/days(1)+1
-    
-    date_time_grid=tidyr::expand_grid(time = seq_len(N_time_inp),
-                                      division_country = time_constant_data$division_country) %>%
-      inner_join(
-        tibble(
-      time=seq_len(N_time_inp),
-      date_t=period_dates,
-      day_num=day(period_dates),
-      week_num=week(period_dates),
-      month_num=month(period_dates),
-      year_num=year(period_dates)
-    ), by="time")
-    
-    date_time_grid=date_time_grid %>% group_by(year_num, month_num, week_num, day_num) %>%
-      mutate(day_shock=rnorm(1,0,0.1)) %>% ungroup() %>%
-      group_by(year_num, month_num, week_num) %>%
-      mutate(week_shock=rnorm(1, 0, 0.14)) %>% ungroup() %>%
-      group_by(year_num, month_num) %>%
-      mutate(month_shock=rnorm(1, 0, 0.17)) %>% ungroup() %>%
-      group_by(year_num) %>%
-      mutate(year_shock=rnorm(1, 0, 0.22)) %>% ungroup() %>%
-      mutate(date_shock=day_shock+week_shock+month_shock+year_shock) %>%
-      select(-c(day_shock,week_shock,month_shock,year_shock))
-      
-    
-  }
   
+  
+  #create a date_time grid with shocks
+  date_time_grid=helper_date_shocks(T_freq_inp=T_freq_inp,date_start_inp=date_start_inp,
+                                    N_time_inp=N_time_inp, time_constant_data=time_constant_data)
   
   # d_it
   #creates a NxT by 2 tibble; each row is a unique entry (unit) x time combo
@@ -537,10 +575,9 @@ gen_time_varying_data<-function(time_constant_data,N_inp,  N_time_inp,
   fake_data_time_varying <- inner_join(fake_data_time_varying, first_period, by = "division_country") %>%
     mutate(m = time - first)
   
-  fake_data_time_varying=helper_num_pitches(N_time_inp, N_inp, fake_data_time_varying)
+  fake_data_time_varying=helper_num_pitches(N_time_inp, N_inp, T_freq_inp ,fake_data_time_varying)
   
-  ifelse(is.null(date_time_grid), return(fake_data_time_varying %>% mutate(date_shock=0) %>% arrange(time,division_country )), 
-         return(fake_data_time_varying %>% inner_join(date_time_grid, by=c("division_country","time"))%>% arrange(time,division_country ) ))
+  return(fake_data_time_varying %>% inner_join(date_time_grid, by=c("division_country","time"))%>% arrange(time,division_country ) )
   
 }
 
@@ -603,6 +640,7 @@ gen_synthetic_output<-function(synthetic_data_vars, tau_one_zero_inp, tau_decay_
   
   tau_one <-helper_treatment_effect_seq(synthetic_data_vars, tau_one_zero_inp, tau_decay_inp)
   
+  #TODO(alexdkellogg): Treatment Effect and Growth adjustment -- way too big
   #for each unit, by each time period
   for (i in 1:N_inp) {
     for (t in 2:N_time_inp) {
@@ -712,7 +750,7 @@ gen_data <-function(N = 500,  N_time = 100, treat_start=45,
   
   
   fake_data=gen_time_varying_data(time_constant_data=fake_data_time_cons,N_inp=N,
-                                  N_time_inp=N_time,
+                                  N_time_inp=N_time, 
                                   treat_start_inp=treat_start)
   
   
@@ -780,9 +818,10 @@ gen_data <-function(N = 500,  N_time = 100, treat_start=45,
 
 
 
-gen_data_lubr <-function(N = 500,  date_start="2020-03-04",
+gen_data_lubr <-function(N = 100,  date_start="2019-09-04",
                          date_end="2020-07-04",
-                         treat_start="2020-05-04",
+                         treat_start="2020-01-04", 
+                         T_freq=c("daily","weekly","monthly", "yearly"),
                     tau_one_zero = 0.02, tau_decay=0.9, gamma = 0.0009,
                     seed = 1982, prop_treated = 0.5,  rho_y = 0.4, 
                     type = c("random", "observables")) {
@@ -794,21 +833,41 @@ gen_data_lubr <-function(N = 500,  date_start="2020-03-04",
     type <- match.arg(type)
   }
   
+  if (missing(T_freq)) {
+    T_freq <- "monthly"
+  } else{
+    T_freq <- match.arg(T_freq)
+  }
+  
   stopifnot(prop_treated > 0 & prop_treated <= 1)
-  stopifnot(ymd(date_end)-ymd(date_start) > 0, 
-            ymd(date_end)-ymd(treat_start) > 5,
-            ymd(treat_start)-ymd(date_start) > 5)
+  
+  #given the dates and frequency, identify total number of periods
+  N_time=switch(T_freq,
+                "daily"=ceiling(interval(ymd(date_start), ymd(date_end))/days(1)+1),
+                "weekly"=ceiling(interval(ymd(date_start), ymd(date_end))/weeks(1)+1),
+                "monthly"=ceiling(interval(ymd(date_start), ymd(date_end))/months(1)+1),
+                "yearly"=ceiling(interval(ymd(date_start), ymd(date_end))/years(1)+1)
+  )
+  treat_start_int=switch(T_freq,
+                         "daily"=interval(ymd(date_start), ymd(treat_start))/days(1)+1,
+                         "weekly"=interval(ymd(date_start), ymd(treat_start))/weeks(1)+1,
+                         "monthly"=interval(ymd(date_start), ymd(treat_start))/months(1)+1,
+                         "yearly"=interval(ymd(date_start), ymd(treat_start))/years(1)+1
+  )
+  
+  #Stop if there are too few pre or post treat periods
+  stopifnot(treat_start_int < 10, 
+            N_time-treat_start_int>5)
+
   
   fake_data_time_cons=gen_time_constant_data(N_inp=N, prop_treated_inp=prop_treated,
                                              type_inp=type)
-  
 
   
-  N_time=interval(ymd(date_start), ymd(date_end))/days(1)+1
   fake_data=gen_time_varying_data(time_constant_data=fake_data_time_cons,N_inp=N,
                                   date_start_inp=date_start,
-                                  N_time_inp=N_time,
-                                  treat_start_inp=treat_start)
+                                  N_time_inp=N_time, T_freq_inp = T_freq,
+                                  treat_start_inp=treat_start_int)
   
   
   y_long=gen_synthetic_output(synthetic_data_vars=fake_data, tau_one_zero_inp=tau_one_zero,
@@ -912,42 +971,9 @@ aggregate_data_by_date<-function(disagg_data, to="monthly", from="daily"){
       treated==0~NA_real_,
       treated==1~(length(treatperiod_0)-sum(treatperiod_0)+1)
     ),
-    post_treat_t=period-Treatment_Period) 
+    post_treat_t=period-Treatment_Period) %>% ungroup()
   
   return(agg_data_covariates)
 
-  
-}
-
-
-
-
-reformat_random_effects_dgp<-function(re_fake_data, id_var="entry", time_var="period",
-                                      treat_time_var="Treatment_Period", treat_indicator_var="treatperiod_0"){
-  #Transforms data from the Random Effects DGP (which has a standard output tibble) to a format usaable with causal_panel_benchmark_functions
-  
-  #Args
-  #re_fake_data: long-form dataframe output from "gen_data" function in random_effects_dgp.R.
-  #id_var: column name for the new numeric, unique ID representing the entry (unit) 
-  #time_var:column name for the new numeric period number indicating the time period, in increasing order (eg 0 is the first time, 120 is the last)
-  #treat_indicator:column name of the new binary (0, 1) indicator for whether id_var i in time_var t was treated. Once treated, must always be treated (for now)
-  #treat_time_var: column name for the new numeric variable indicating, for each entry, it's first treatment exposure
-  
-  #output: renaming and reformatting the output from gen_data so that the columns work with future estimation functions in causal_panel_benchmark_functions
-  
-  reformatted_data=re_fake_data %>% rename(!!as.name(time_var):=time, !!as.name(id_var):=division_country) %>% 
-    select(!!as.name(time_var), !!as.name(id_var), treated, total_pitches, y) %>% group_by(!!as.name(id_var)) %>%
-    mutate(
-      !!as.name(treat_time_var):=case_when(
-        treated==1~(length(total_pitches)-sum(total_pitches>0)+1),
-        treated==0~NA_real_),
-      !!as.name(treat_indicator_var):=case_when(
-        is.na(!!as.name(treat_time_var))~0,
-        !!as.name(time_var)<!!as.name(treat_time_var)~0,
-        !!as.name(time_var)>=!!as.name(treat_time_var)~1
-      )
-    ) 
-  
-  return(reformatted_data)
   
 }
