@@ -121,8 +121,6 @@ create_placebo_df <- function(data_full, id_var = "entry",
   # consisting of donor units, some of which are placebo-treated 
   # (based on matching).
   
-  
-  
   # Split the dataset based on whether the unit is ever treated
   tr_entries <- data_full %>%
     dplyr::filter(!!as.name(treat_indicator) > 0) %>%
