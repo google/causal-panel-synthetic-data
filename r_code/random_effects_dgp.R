@@ -12,19 +12,31 @@ set.seed(1982)
 helper_gen_xs<-function(N_input){
   #these are x variables drawn from a number of different distributions
   #there are a total of 24 variables, so that the Xs are Nx24
-  Sigma <- matrix(c(10, 3, 3, 2), 2, 2)
-  vs <- MASS::mvrnorm(n = N_input, rep(0, 2), Sigma)
+  Sigma <- matrix(c(16 ,  4,  -4.8,
+                     4  , 25,    9,
+                     -4.8,  9,    9),3,3)
+  vs_all <- MASS::mvrnorm(n = N_input, rep(0, 3), Sigma)
+  vs <- vs_all[,1:2]
   v3 <- rbeta(n = N_input,
               shape1 = 2,
               shape2 = 2)
   v4 <- rbinom(n = N_input, size = 10, prob = 0.2)
   v5 <- matrix(rnorm(N_input * 20), N_input, 20)
-  #colnames(v5) <- glue::glue("v{5:24}") #redundant
   xs <- cbind(vs, v3, v4, v5)
   colnames(xs) <- glue::glue("v{1:24}")
-  xs <- as_tibble(xs) %>%
+  
+  unobs_corr=vs_all[,3]
+  unobs_rand1=rbeta(n = N_input,
+                   shape1 = 2,
+                   shape2 = 2)
+  unobs_rand2=rbinom(n = N_input, size = 10, prob = 0.2)
+  unobs_xs=cbind(unobs_corr,unobs_rand1,unobs_rand2 )
+  colnames(unobs_xs) <- glue::glue("unobs_v{1:3}")
+  
+  xs <- as_tibble(cbind(xs, unobs_xs)) %>%
     mutate(division_country = 1:N_input)
-  return(xs)
+
+    return(xs)
 }
 
 
@@ -75,7 +87,7 @@ helper_gen_vert_re<-function(){
 }
 
 
-helper_assign_treat<-function(type_inp, N_inp, prop_treated_inp){
+helper_assign_treat<-function(covariate_inp,unobs_inp, type_inp, N_inp, prop_treated_inp){
   #Type determines whether the selection into treatement is random or not
   if (type_inp == "random") {
     #if randome assignment of treatment
@@ -88,12 +100,12 @@ helper_assign_treat<-function(type_inp, N_inp, prop_treated_inp){
         size = N_inp,
         prob = c(1 - prop_treated_inp, prop_treated_inp),
         replace = TRUE  )  )  )
-  } else{ #if treatment is based on observables,
+  } 
+  else{ #if treatment is based on covariates,
     #select a subset of the variables (v1,3,5,6,8,9,11,12,13,14,16,18,22,23) -- why these (ask ignacio)?
     #and store them in a matrix
-    z <- xs %>%
-      select(-division_country,
-             -v2,
+    z <- covariate_inp %>%
+      select(-v2,
              -v4,-v7,
              -v10,
              -v15,
@@ -101,6 +113,12 @@ helper_assign_treat<-function(type_inp, N_inp, prop_treated_inp){
              -v21,
              -v24) %>%
       as.matrix()
+    
+    if(type_inp=="unobservables"){
+      z <- unobs_inp %>% as.matrix()
+    }
+    
+    
     #draw a vec of standard normal rvs, with length of the num of variables in z
     beta <- rnorm(n = ncol(z),
                   mean = 0,
@@ -110,7 +128,6 @@ helper_assign_treat<-function(type_inp, N_inp, prop_treated_inp){
     zbeta <- z %*% beta
     
     colnames(zbeta) <- 'zbeta'
-    
     #zbeta can range from negative to positive, so we rescale it using the
     #logistic function to map it into the probability space (0,1)
     p <- zbeta %>% as_tibble() %>%
@@ -118,6 +135,16 @@ helper_assign_treat<-function(type_inp, N_inp, prop_treated_inp){
     
     #Ask ignacio: could we just take the top "prop_treated" from the logistic transformation above?
     #or, to have more randomness, subtract a random uniform from each and take the top frac?
+    return( p %>% ungroup() %>%
+      mutate(
+        u = runif(n = N_inp, min = 0, max = 1),
+        p_new = p+u,
+        treated=cut(percent_rank(p_new), c(-Inf,1-prop_treated_inp,Inf), labels = c(0,1)),
+        division_country = 1:N_inp
+        ) %>% select(division_country, treated)
+    
+    )
+    
     
     #while the average probability is different than our ultimate goal from prop_treated
     #adjust each individual p by the difference.
@@ -145,7 +172,8 @@ helper_assign_treat<-function(type_inp, N_inp, prop_treated_inp){
 }
 
 helper_first_period<-function(N_inp, N_time_inp,treat_start_inp, treated_tib){
-
+  
+  last_treat=ceiling(median(c(N_time_inp, treat_start_inp)))
   return(tibble(division_country = 1:N_inp,
          first = sample(
            x = treat_start_inp:(N_time_inp - 5),
@@ -343,7 +371,7 @@ gen_time_constant_data <-function(N_inp, prop_treated_inp, type_inp) {
   
   #these are x variables drawn from a number of different distributions
   #there are a total of 24 variables, so that the Xs are Nx24
-  xs<-helper_gen_xs(N_inp)
+  xs_obs_unobs<-helper_gen_xs(N_inp)
   
   
   # Vertical
@@ -372,7 +400,7 @@ gen_time_constant_data <-function(N_inp, prop_treated_inp, type_inp) {
   #Then, given the vertical they are assigned, we map on their vertical random effect 
   #(ASK Ignacio -- dropped immediately, not used for anything? -- sol: merged later)
   #then, we create a new variable, v25, that is 0 unless they are in vertical E or K
-  xs <- inner_join(xs, verticalxwalk, by = "division_country") %>%
+  xs_obs_unobs <- inner_join(xs_obs_unobs, verticalxwalk, by = "division_country") %>%
     inner_join(vertical_re, by = "vertical") %>%
     mutate(v25 = case_when(vertical == "E" ~ -3.1,
                            vertical == "K" ~ -2.02,
@@ -382,7 +410,9 @@ gen_time_constant_data <-function(N_inp, prop_treated_inp, type_inp) {
   
   
   # Treatment
-  treated<-helper_assign_treat(type_inp, N_inp, prop_treated_inp)
+  x_obs=xs_obs_unobs %>% select(-c(division_country,contains("unobs")) )
+  x_unobs=xs_obs_unobs %>% select(contains("unobs"))
+  treated<-helper_assign_treat(covariate_inp=x_obs,unobs_inp=x_unobs ,type_inp, N_inp, prop_treated_inp)
   
   
   # a_i
@@ -406,7 +436,7 @@ gen_time_constant_data <-function(N_inp, prop_treated_inp, type_inp) {
     inner_join(vertical_re, by = "vertical") %>%
     inner_join(treated, by = "division_country") %>%
     inner_join(beta, by = c("division_country")) %>% 
-    inner_join(xs, by= "division_country")
+    inner_join(xs_obs_unobs, by= "division_country")
   
   
   return(fake_data_unit_level)
@@ -461,6 +491,7 @@ helper_date_shocks<-function(T_freq_inp,date_start_inp,
   freq_vars=agg_ids[seq(freq_ind, length(agg_ids))]
   #define noise at each level, starting from daily, weekly, monthly, yearly
   freq_sd=c(0.1,0.15, 0.2,0.25)
+  #add noise for the fine-ness of the data, as well as coarser dates (assumed independent)
   joint_sd=sum(freq_sd[seq(freq_ind,length(freq_sd))]**2)
 
   return(date_time_grid %>% group_by_at(c(freq_vars)) %>%
@@ -468,6 +499,7 @@ helper_date_shocks<-function(T_freq_inp,date_start_inp,
   
 }
 
+#daily
 
 gen_time_varying_data<-function(time_constant_data,N_inp,  N_time_inp, T_freq_inp,
                                 treat_start_inp, date_start_inp){
@@ -789,16 +821,14 @@ gen_data <-function(N = 500,  N_time = 100, treat_start=45,
     
     ## Output data
     synthetic_data_full=fake_data %>%
-      dplyr::select(-y1)  %>% 
-      rename(period=time,post_treat_t=m, Treatment_Period=first,
-             counter_factual=y0, target=y) %>%
+      rename(period=time,post_treat_t=m, Treatment_Period=first) %>%
       mutate(treatperiod_0=case_when(
         period>=Treatment_Period~1,
         period<Treatment_Period~0
       )) %>% 
       rename(entry=division_country) %>% arrange(period, entry) %>%
       select(period, entry, Treatment_Period, new_pitches, total_pitches, 
-             counter_factual, target, post_treat_t, everything())
+             y0, y1, y, post_treat_t, everything())
     
   return(synthetic_data_full)
     
@@ -820,11 +850,14 @@ gen_data <-function(N = 500,  N_time = 100, treat_start=45,
 
 gen_data_lubr <-function(N = 100,  date_start="2019-09-04",
                          date_end="2020-07-04",
-                         treat_start="2020-01-04", 
+                         first_treat="2020-01-04", 
                          T_freq=c("daily","weekly","monthly", "yearly"),
                     tau_one_zero = 0.02, tau_decay=0.9, gamma = 0.0009,
                     seed = 1982, prop_treated = 0.5,  rho_y = 0.4, 
-                    type = c("random", "observables")) {
+                    type = c("random", "observables", "unobservables")) {
+  
+  #can allow all the way to the end?
+  #unobservables added
   
   set.seed(seed)
   if (missing(type)) {
@@ -843,20 +876,20 @@ gen_data_lubr <-function(N = 100,  date_start="2019-09-04",
   
   #given the dates and frequency, identify total number of periods
   N_time=switch(T_freq,
-                "daily"=ceiling(interval(ymd(date_start), ymd(date_end))/days(1)+1),
-                "weekly"=ceiling(interval(ymd(date_start), ymd(date_end))/weeks(1)+1),
-                "monthly"=ceiling(interval(ymd(date_start), ymd(date_end))/months(1)+1),
-                "yearly"=ceiling(interval(ymd(date_start), ymd(date_end))/years(1)+1)
+                "daily"=ceiling(lubridate::interval(ymd(date_start), ymd(date_end))/days(1)+1),
+                "weekly"=ceiling(lubridate::interval(ymd(date_start), ymd(date_end))/weeks(1)+1),
+                "monthly"=ceiling(lubridate::interval(ymd(date_start), ymd(date_end))/months(1)+1),
+                "yearly"=ceiling(lubridate::interval(ymd(date_start), ymd(date_end))/years(1)+1)
   )
   treat_start_int=switch(T_freq,
-                         "daily"=interval(ymd(date_start), ymd(treat_start))/days(1)+1,
-                         "weekly"=interval(ymd(date_start), ymd(treat_start))/weeks(1)+1,
-                         "monthly"=interval(ymd(date_start), ymd(treat_start))/months(1)+1,
-                         "yearly"=interval(ymd(date_start), ymd(treat_start))/years(1)+1
+                         "daily"=ceiling(lubridate::interval(ymd(date_start), ymd(first_treat))/days(1)+1),
+                         "weekly"=ceiling(lubridate::interval(ymd(date_start), ymd(first_treat))/weeks(1)+1),
+                         "monthly"=ceiling(lubridate::interval(ymd(date_start), ymd(first_treat))/months(1)+1),
+                         "yearly"=ceiling(lubridate::interval(ymd(date_start), ymd(first_treat))/years(1)+1)
   )
   
   #Stop if there are too few pre or post treat periods
-  stopifnot(treat_start_int < 10, 
+  stopifnot(treat_start_int > 10, 
             N_time-treat_start_int>5)
 
   
@@ -903,17 +936,16 @@ gen_data_lubr <-function(N = 100,  date_start="2019-09-04",
   # true_lift <- (sum_y1 / sum_y0) - 1
   
   ## Output data
-  synthetic_data_full=fake_data %>%
-    dplyr::select(-y1)  %>% 
-    rename(period=time,post_treat_t=m, Treatment_Period=first,
-           counter_factual=y0, target=y) %>%
+  synthetic_data_full=fake_data %>% 
+    rename(period=time,post_treat_t=m, Treatment_Period=first) %>%
     mutate(treatperiod_0=case_when(
+      is.na(Treatment_Period)~0,
       period>=Treatment_Period~1,
       period<Treatment_Period~0
     )) %>% 
     rename(entry=division_country) %>% arrange(period, entry) %>%
     select(date_t, period, entry, Treatment_Period, new_pitches, total_pitches, 
-           counter_factual, target, post_treat_t, everything())
+           y0, y1, y, post_treat_t, everything())
   
   return(synthetic_data_full)
   
@@ -950,7 +982,7 @@ aggregate_data_by_date<-function(disagg_data, to="monthly", from="daily"){
   new_date_name=paste0(to, "_date_end", sep="")
   agg_data=disagg_data %>% group_by_at(c("entry",to_vars)) %>%
     summarise(new_pitches=sum(new_pitches), total_pitches=sum(total_pitches),
-              counter_factual=sum(counter_factual), target=sum(target),
+              y0=sum(y0), y1=sum(y1), y=sum(y),
               !!as.name(new_date_name):=max(date_t),
               treatperiod_0=max(treatperiod_0)
               ) %>% ungroup() 
@@ -963,7 +995,7 @@ aggregate_data_by_date<-function(disagg_data, to="monthly", from="daily"){
                               treatperiod_0, post_treat_t, 
                               r, date_shock, setdiff(agg_ids,to_vars),
                               new_pitches, total_pitches,
-                              counter_factual, target)) %>%
+                              y0,y1, y)) %>%
       distinct_at(c("entry",to_vars), .keep_all = T), 
     by=c("entry", to_vars)
   ) %>% group_by(entry) %>%
@@ -977,3 +1009,7 @@ aggregate_data_by_date<-function(disagg_data, to="monthly", from="daily"){
 
   
 }
+
+
+
+
