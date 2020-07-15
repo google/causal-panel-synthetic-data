@@ -124,6 +124,10 @@ compute_tot_se_jackknife <- function(estimated_series_df, time_var = "period", t
       furrr::future_map(~ jackknife(., median))
   }
   
+<<<<<<< HEAD
+=======
+  browser()
+>>>>>>> d8a1abc9bb36bc90f8d744dd1fa8fca389999970
   statname_abs <- paste("jackknife_", stat_in, "_abs_tot", sep = "")
   statname_pct <- paste("jackknife_", stat_in, "_pct_tot", sep = "")
   obs_statname_abs <- paste("observed_", stat_in, "_abs_tot", sep = "")
