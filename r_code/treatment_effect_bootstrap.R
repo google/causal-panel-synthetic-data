@@ -60,7 +60,7 @@ compute_tot_se_jackknife <- function(estimated_series_df, time_var = "period", t
       cf_tot_df <- cf_tot_df %>%
         group_by(post_period_t) %>%
         summarise(
-          mean_cf_tot = mean(!!as.name(counterfac_var)),
+          mean_cf_tot = mean(!!as.name(outcome_var)- !!as.name(counterfac_var)),
           mean_pct_cf_tot = mean((!!as.name(outcome_var) / !!as.name(counterfac_var)) - 1)
         ) %>%
         ungroup()
@@ -124,9 +124,10 @@ compute_tot_se_jackknife <- function(estimated_series_df, time_var = "period", t
       furrr::future_map(~ jackknife(., median))
   }
   
-  
   statname_abs <- paste("jackknife_", stat_in, "_abs_tot", sep = "")
   statname_pct <- paste("jackknife_", stat_in, "_pct_tot", sep = "")
+  obs_statname_abs <- paste("observed_", stat_in, "_abs_tot", sep = "")
+  obs_statname_pct <- paste("observed_", stat_in, "_pct_tot", sep = "")
   jackknife_comp_ci_abs <- furrr::future_pmap(list(jackknife_comp_abs, list(probs = c(0.5 - alpha_ci / 2, 0.5 + alpha_ci / 2))), CI.t) %>%
     do.call(rbind, .) %>%
     as_tibble() %>%
@@ -137,6 +138,10 @@ compute_tot_se_jackknife <- function(estimated_series_df, time_var = "period", t
       !!as.name(statname_abs) := jackknife_comp_abs %>% 
         furrr::future_map(~ .[["stats"]]) %>% 
         furrr::future_map(~ .[["Mean"]]) %>%
+        unlist(),
+      !!as.name(obs_statname_abs) := jackknife_comp_abs %>% 
+        furrr::future_map(~ .[["stats"]]) %>% 
+        furrr::future_map(~ .[["Observed"]]) %>%
         unlist()
     )
   names(jackknife_comp_ci_abs)[1:2] <- c("jackknife_lb_abs_tot", "jackknife_ub_abs_tot")
@@ -152,6 +157,10 @@ compute_tot_se_jackknife <- function(estimated_series_df, time_var = "period", t
       !!as.name(statname_pct) := jackknife_comp_pct %>%
         furrr::future_map(~ .[["stats"]]) %>% 
         furrr::future_map(~ .[["Mean"]]) %>%
+        unlist(),
+      !!as.name(obs_statname_pct) := jackknife_comp_pct %>% 
+        furrr::future_map(~ .[["stats"]]) %>% 
+        furrr::future_map(~ .[["Observed"]]) %>%
         unlist()
     )
   
@@ -307,6 +316,8 @@ compute_ci_bounds_bootstrap <- function(estimated_series_df, time_var = "period"
   
   statname_abs <- paste("bootstrap_", stat_in, "_abs_tot", sep = "")
   statname_pct <- paste("bootstrap_", stat_in, "_pct_tot", sep = "")
+  obs_statname_abs <- paste("observed_", stat_in, "_abs_tot", sep = "")
+  obs_statname_pct <- paste("observed_", stat_in, "_pct_tot", sep = "")
   bootstrap_comp_ci_abs <- furrr::future_pmap(list(bootstrap_comp_abs, list(probs = c(0.5 - alpha_ci / 2, 0.5 + alpha_ci / 2))), CI.t) %>%
     do.call(rbind, .) %>%
     as_tibble() %>%
@@ -317,6 +328,10 @@ compute_ci_bounds_bootstrap <- function(estimated_series_df, time_var = "period"
       !!as.name(statname_abs) := bootstrap_comp_abs %>% 
         furrr::future_map(~ .[["stats"]]) %>% 
         furrr::future_map(~ .[["Mean"]]) %>%
+        unlist(),
+      !!as.name(obs_statname_abs) := bootstrap_comp_abs %>% 
+        furrr::future_map(~ .[["stats"]]) %>% 
+        furrr::future_map(~ .[["Observed"]]) %>%
         unlist()
     )
   names(bootstrap_comp_ci_abs)[1:2] <- c("bootstrap_lb_abs_tot", "bootstrap_ub_abs_tot")
@@ -331,6 +346,10 @@ compute_ci_bounds_bootstrap <- function(estimated_series_df, time_var = "period"
       !!as.name(statname_pct) := bootstrap_comp_pct %>% 
         furrr::future_map(~ .[["stats"]]) %>% 
         furrr::future_map(~ .[["Mean"]]) %>%
+        unlist(),
+      !!as.name(obs_statname_pct) := bootstrap_comp_pct %>% 
+        furrr::future_map(~ .[["stats"]]) %>% 
+        furrr::future_map(~ .[["Observed"]]) %>%
         unlist()
     )
   names(bootstrap_comp_ci_pct)[1:2] <- c("bootstrap_lb_pct_tot", "bootstrap_ub_pct_tot")
