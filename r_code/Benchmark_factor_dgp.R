@@ -273,7 +273,7 @@ causalimpact_pct_coverage_AA=future_map(causalimpact_bootstrapped_pct_att_AA, co
 
 #Placebo Ensemble Method
 Sys.sleep(19)
-est_placebo_ensemble_weights=future_pmap(list(gsynth_ife_AA, scdid_results_AA, causalimpact_results_AA, gsynth_mc_AA), ensemble_placebo_weights, pos_coef_constr=F, intercept_allowed=T)
+est_placebo_ensemble_weights=future_pmap(list(gsynth_ife_AA, scdid_results_AA, causalimpact_results_AA, gsynth_mc_AA), ensemble_placebo_weights, constrained=F, intercept_allowed=T)
 placebo_ensemble_results=future_pmap(list(gsynth_ife_AB, scdid_results_AB, causalimpact_results_AB, gsynth_mc_AB, est_placebo_ensemble_weights), ensembled_predictor)
 
 #get bootstrapped CIs, counterfactual effects

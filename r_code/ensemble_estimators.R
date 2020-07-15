@@ -24,7 +24,7 @@ library(ForecastComb)
 ensemble_placebo_weights <- function(method1_estimated_df, method2_estimated_df, method3_estimated_df, method4_estimated_df,
                                      time_var = "period", id_var = "entry", treat_time_var = "Treatment_Period",
                                      pred_var = "point.pred", counterfac_var = "counter_factual",
-                                     pos_coef_constr = F, intercept_allowed = T) {
+                                     constrained = T, intercept_allowed = T) {
   
   # Estimates the weights for an ensemble using linear regression on a placebo set
   # This method is, as of now, highly specific -- intended for a placebo data set
@@ -43,9 +43,10 @@ ensemble_placebo_weights <- function(method1_estimated_df, method2_estimated_df,
   # pred_var: string name of the point estimate column in the methodX dataframe
   # counterfac_var: name of var for the counterfactual value for the time series, if available (otherwise, NULL)
   # pos_coef_constr: Boolean flag for whether the weights should be non-negative
+  # sum_to_one: Boolean flag for whether the coefficients (without intercept) sum to 1
   
   # Output
-  # weights, as a 3x1 (num methods X 1) vector, from an unconstrained linear reg
+  # weights, as a 4x1 (num methods X 1) vector, from an unconstrained linear reg
   
   combined_methods_df <- method1_estimated_df %>%
     dplyr::select(
@@ -76,67 +77,30 @@ ensemble_placebo_weights <- function(method1_estimated_df, method2_estimated_df,
   # For now, we do this with simple linear regression and no constraints
   post_treat_combined_df <- combined_methods_df %>% filter(!!as.name(time_var) >= !!as.name(treat_time_var))
   
-  if (intercept_allowed == T & pos_coef_constr == T) {
-    x <- cbind(1, as.matrix(cbind(
-      combined_methods_df %>% pull(m1_pred),
-      combined_methods_df %>% pull(m2_pred),
-      combined_methods_df %>% pull(m3_pred),
-      combined_methods_df %>% pull(m4_pred)
-    )))
-    
-    r_inv <- solve(chol(t(x) %*% x))
-    c <- t(cbind(0, rbind(1, diag(4))))
-    
-    b <- c(1, rep(0, 4))
-    
-    d <- t(combined_methods_df %>% pull(!!as.name(counterfac_var))) %*% x
-    nn2 <- sqrt(norm(d, "2"))
-    
-    constr_weights_sol <- solve.QP(Dmat = r_inv * nn2, factorized = TRUE, dvec = d / (nn2^2), Amat = c, bvec = b, meq = 1)
-    weight_vec <- constr_weights_sol$solution
-  }
+  x=as.matrix(cbind(
+    combined_methods_df %>% pull(m1_pred),
+    combined_methods_df %>% pull(m2_pred),
+    combined_methods_df %>% pull(m3_pred),
+    combined_methods_df %>% pull(m4_pred)
+  ))
   
-  if (intercept_allowed == F & pos_coef_constr == T) {
-    x <- as.matrix(cbind(
-      combined_methods_df %>% pull(m1_pred),
-      combined_methods_df %>% pull(m2_pred),
-      combined_methods_df %>% pull(m3_pred),
-      combined_methods_df %>% pull(m4_pred)
-    ))
-    
-    
-    r_inv <- solve(chol(t(x) %*% x))
-    c <- cbind(rep(1, 4), diag(4))
-    b <- c(1, rep(0, 4))
-    
-    d <- t(combined_methods_df %>% pull(!!as.name(counterfac_var))) %*% x
-    nn2 <- sqrt(norm(d, "2"))
-    
-    constr_weights_sol <- solve.QP(Dmat = r_inv * nn2, factorized = TRUE, dvec = d / (nn2^2), Amat = c, bvec = b, meq = 1)
-    weight_vec <- constr_weights_sol$solution
-  }
-  
-  if (intercept_allowed == T & pos_coef_constr == F) {
-    lm_formula <- paste(counterfac_var, "~+offset(m1_pred)+I(m2_pred-m1_pred)+I(m3_pred-m1_pred)+I(m4_pred-m1_pred)")
-    ols_ensemble_weights <- lm(as.formula(lm_formula), data = post_treat_combined_df)
-    
-    coefs_temp <- unname(ols_ensemble_weights$coefficients)[-1]
-    
-    # intercept comes first, then rest
-    weight_vec <- c(ols_ensemble_weights$coefficients[[1]], 1 - sum(coefs_temp), coefs_temp)
-  }
-  if (intercept_allowed == F & pos_coef_constr == F) {
-    lm_formula <- paste(counterfac_var, "~+offset(m1_pred)+I(m2_pred-m1_pred)+I(m3_pred-m1_pred)+I(m3_pred-m1_pred)+0")
-    ols_ensemble_weights <- lm(as.formula(lm_formula), data = post_treat_combined_df)
-    
-    coefs_temp <- unname(ols_ensemble_weights$coefficients)
-    weight_vec <- c(
-      1 - sum(coefs_temp),
-      coefs_temp
-    )
-  }
+  if(intercept_allowed) x=cbind(1,x)
   
   
+  r_inv <- solve(chol(t(x) %*% x))
+  c=cbind(rep(1, 4), diag(4))
+  
+  if(intercept_allowed) c=t(cbind(0, rbind(1, diag(4))))
+  
+  b <- c(1, rep(0, 4))
+  d <- t(combined_methods_df %>% pull(!!as.name(counterfac_var))) %*% x
+  nn2 <- sqrt(norm(d, "2"))
+  
+  
+  constr_weights_sol <- solve.QP(Dmat = r_inv * nn2, factorized = TRUE, dvec = d / (nn2^2), Amat = c, bvec = b, meq = 1)
+  weight_vec <- constr_weights_sol$solution
+  
+  if(!constrained) weight_vec <- constr_weights_sol$unconstrained.solution
   
   
   return(weight_vec)
