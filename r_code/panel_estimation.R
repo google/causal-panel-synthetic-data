@@ -224,7 +224,7 @@ estimate_gsynth_series <- function(data_full, id_var = "entry", time_var = "peri
   
   
   # Output
-  
+  browser()
   # estimate the panel SCM
   gsynth_agg_te_all_t <- gsynth(
     Y = outcome_var, D = treat_indicator, data = data_full, index = c(id_var, time_var), X = x_in,

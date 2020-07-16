@@ -42,7 +42,25 @@ gsynth_ife_pct_coverage_AA=future_map(gsynth_ife_bootstrapped_pct_att_AA, comput
 
 
 
+#propensity score
 
+aa_prop_score=gen_data_lubr(N=100, date_start="2018-01-01",
+                  first_treat ="2019-01-01", date_end="2020-07-04", 
+                  tau_one_zero=0, T_freq = "monthly",
+                  gamma=0, prop_treated=0.25, rho_y=0.3, type="observables", seed=19)
+
+treat_reg_data=aa_prop_score %>% select(contains("v"), treated, entry) %>% distinct(entry, .keep_all = T) %>% select(-entry)
+temp_prop_reg=lm(treated~ ., data=treat_reg_data)
+summary(temp_prop_reg)
+
+aa_prop_score_unobs=gen_data_lubr(N=100, date_start="2018-01-01",
+                            first_treat ="2019-01-01", date_end="2020-07-04", 
+                            tau_one_zero=0, T_freq = "monthly",
+                            gamma=0, prop_treated=0.25, rho_y=0.3, type="unobservables", seed=19)
+
+treat_reg_data=aa_prop_score_unobs %>% select(contains("v"), treated, entry) %>% distinct(entry, .keep_all = T) %>% select(-entry)
+temp_prop_reg=lm(treated~ ., data=treat_reg_data)
+summary(temp_prop_reg)
 
 
 

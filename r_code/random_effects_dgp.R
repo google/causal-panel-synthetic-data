@@ -139,7 +139,7 @@ helper_assign_treat<-function(covariate_inp,unobs_inp, type_inp, N_inp, prop_tre
       mutate(
         u = runif(n = N_inp, min = 0, max = 1),
         p_new = p+u,
-        treated=cut(percent_rank(p_new), c(-Inf,1-prop_treated_inp,Inf), labels = c(0,1)),
+        treated=as.numeric(percent_rank(p_new)>1-prop_treated_inp),
         division_country = 1:N_inp
         ) %>% select(division_country, treated)
     
