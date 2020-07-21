@@ -1,19 +1,21 @@
-
+library(dplyr)
 
 #TODO(alexdkellogg): allow dgp to be covariates only or factors only
+#TODO(alexdkellogg): allow num_periods directly rather than dates
+#TODO(alexdkellogg): introduce coeff vector and have xBeta go into Y
 factor_synthetic_dgp<-function(num_entries=2000,
                                num_factors=3,
-                               factor_sd=0.1,
                                date_start="2017-01-01",
                                first_treat="2018-07-01",
                                date_end="2020-01-01",
                                freq=c("daily", "weekly", "monthly"),
                                prop_treated=0.4,
-                               rho=0.9,
-                               rho_scale=1,
+                               rho=0.9, #min rho for treated units, max=0.9999
+                               rho_scale=0.2, #sd of truncated normal for rho
+                               rho_shift=0, #shift in the rho mean for control units
                                cov_overlap_scale=0, #between -1 and 1
                                loading_scale=0,
-                               intercept_scale=0,
+                               intercept_scale=0, #subtracts max runif for control
                                treat_impact_mean=0.1,
                                treat_impact_sd=0.1,
                                treat_decay_mean=0.7,
@@ -21,7 +23,8 @@ factor_synthetic_dgp<-function(num_entries=2000,
                                conditional_impact_het=0, #between -1 and 1
                                selection=c("random", "observables", 
                                            "unobservables"),
-                               seed=19){
+                               seed=19){ 
+  #censor_y=5e7
   
   
   
@@ -47,6 +50,8 @@ factor_synthetic_dgp<-function(num_entries=2000,
   stopifnot(cov_overlap_scale <= 1 & cov_overlap_scale >= -1)
   #require 3 factors of more
   stopifnot(num_factors>2)
+  #require less than 100% TE
+  stopifnot(treat_impact_mean<1)
   
   #given the dates and frequency, identify total number of periods
   num_periods=time_interval_calculator(start_t=date_start, end_t=date_end,
@@ -65,7 +70,9 @@ factor_synthetic_dgp<-function(num_entries=2000,
                                loading_scale_inp=loading_scale,
                                num_factors_inp=num_factors,
                                int_scale_inp=intercept_scale,
-                               rho_sd_inp=rho_scale,
+                               rho_inp=rho,
+                               rho_scale_inp=rho_scale,
+                               rho_shift_inp=rho_shift,
                                prop_treated_inp=prop_treated,
                                treat_start=treat_start_int,
                                num_periods_inp=num_periods,
@@ -76,23 +83,143 @@ factor_synthetic_dgp<-function(num_entries=2000,
 
   #next, work on time varying characteristics
   synth_data_factors=generate_factors(num_factors_inp=num_factors,
-                                      factor_sd_inp=factor_sd, 
                                       num_periods_inp=num_periods, 
                                       num_entry_inp=num_entries,
                                       date_start_inp=date_start,
                                       date_end_inp=date_end,
-                                      freq_inp=freq,
-                                      rho_inp=rho, 
-                                      rho_het_inp=rho_scale)
-  
+                                      freq_inp=freq)
   
   #Next, we generate both potential outcomes
   #Option for factor only (y=factor*loadings), Random Effect only
   # (y=xB), or both.
+  #Then, generate the treatment impact
+  unit_time_grid <-tidyr::expand_grid(entry = seq_len(num_entries),
+                                      time = seq_len(num_periods)) 
+  
+  synth_data_full=unit_time_grid %>% 
+    dplyr::left_join(synth_data_unit,by=c("entry")) %>%
+    dplyr::left_join(synth_data_factors,by=c("time"))
+  
+  #generate the counterfactual outcomes
+  synth_data_full=generate_counterfactual(synth_data_full,
+                                          num_periods_inp=num_periods)
+  
+  
+  
+  #generate the per period impact (taking acocunt of decay)
+  #TODO(alexdkellogg): add conditional_boost as option, larger TE for big cf
+  synth_data_full=generate_treat_impact(data_inp=synth_data_full,
+                                        cond_impact_inp=conditional_impact_het)  %>%
+    dplyr::mutate(y=exp(y),
+                  y0=exp(y0),
+                  y1=exp(y1))
+  
+  return(synth_data_full)
+  
   
   
 }
 
+
+compute_factor_loadings <- function(data_inp){
+  #create a list of factor loadings split by individual
+  loadings_vec_list=data_inp %>%
+    dplyr::select(entry, tidyselect::contains("loading")) %>%
+    dplyr::distinct(entry, .keep_all=T) %>%
+    dplyr::group_split(entry, .keep=F) %>%
+    lapply(as.matrix)
+  #create a list of factor matrices split by individual
+  factor_mat_list=data_inp %>%
+    dplyr::select(entry, tidyselect::contains("factor")) %>%
+    dplyr::group_split(entry, .keep=F) %>% 
+    lapply(as.matrix)
+  #Compute the matrix product of loadings and factors for each individual
+  return(furrr::future_map2(.x=loadings_vec_list,.y=factor_mat_list,
+                                         .f=~(.y)%*%t(.x) ) %>%
+    unlist())
+}
+
+#TODO(alexdkellogg): check with AP about 0 noise AR for y
+compute_outcome_process<-function(data_inp,num_periods_inp){
+  #create a list of AR models, with individual specific noise and autocorr
+  ar_param_inp=data_inp %>%
+    dplyr::select(entry, autocorr) %>%
+    dplyr::distinct(entry, .keep_all=T) %>%
+    dplyr::group_split(entry, .keep=F) %>%
+    lapply(function(x){ list(order=c(1,0,0), ar=x[[1]])} )
+  
+  
+  innov_list=data_inp %>%
+    dplyr::select(entry, tidyselect::contains("loading")) %>%
+    dplyr::group_split(entry, .keep=F)   %>%
+    lapply(as.matrix)
+  
+  
+  return(furrr::future_map2(.x=ar_param_inp, .y=innov_list,
+                               .f=~stats::arima.sim(model=.x,
+                                                    n=num_periods_inp,
+                                                    n.start = 500,
+                                                    innov = .y)) %>%
+    unlist())
+  
+}
+
+
+generate_counterfactual<-function(data_inp,num_periods_inp){
+  
+  outcome_series=data_inp %>%
+    dplyr::select(time, entry, intercept, autocorr, 
+                  tidyselect::matches("loading|factor"))
+  
+  computed_factor_vec=compute_factor_loadings(outcome_series)
+  
+  outcome_series=outcome_series %>%
+    dplyr::select(-tidyselect::matches("loading|factor")) %>%
+    dplyr::mutate(factor_loadings=computed_factor_vec)
+  
+  #TODO(alexdkellogg): add in the covariates
+  # Should this be in the outcome process or just y0=outcome_ar+xB?
+  outcome_ar=compute_outcome_process(outcome_series,num_periods_inp)
+  
+  outcome_series=outcome_series %>%
+    dplyr::mutate(factor_loadings=computed_factor_vec,
+                  y0=outcome_ar+intercept+stats::rnorm(dplyr::n(), sd=0.5)) %>%
+    dplyr::select(time, entry, factor_loadings, y0)
+  
+  return(data_inp %>% 
+           dplyr::inner_join(outcome_series, by=c("time", "entry")) %>%
+           dplyr::select(time, entry, treated, treatment_period,y0,
+                         factor_loadings, dplyr::everything())
+         )
+  
+
+}
+
+
+generate_treat_impact<-function(data_inp=synth_data_full, 
+                                cond_impact_inp){
+  #Define the treatment propogation for each unit and time combo
+  data_inp=data_inp %>%
+    dplyr::group_by(entry) %>%
+    dplyr::mutate(
+      post_treat_t=time-treatment_period,
+      decay_t=dplyr::case_when(
+        post_treat_t<0~0,
+        post_treat_t>=0~treat_decay**post_treat_t),
+      impact_t=decay_t*(treat_impact+cond_impact_inp),
+      ) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(-c(treat_decay, treat_decay, decay_t)) 
+  
+  #Add the treatment impact to create y1
+  return(data_inp %>% 
+    dplyr::mutate(y1=impact_t+y0,
+                  y=treated*y1+(1-treated)*y0) %>%
+      dplyr::select(time, entry, treated, 
+                    post_treat_t, treatment_period, impact_t,
+                    y, y0,y1,
+                    dplyr::everything()))
+}
 
 
 generate_time_grid <- function(date_start_inp,num_periods_inp, 
@@ -133,16 +260,15 @@ generate_time_grid <- function(date_start_inp,num_periods_inp,
 #can group by treated and call generate factors with varying rho using
 #rho_het_inp, which multiplies rho for the counterfactuals
 
-generate_factors<-function(num_factors_inp, factor_sd_inp, 
+generate_factors<-function(num_factors_inp, 
                            num_periods_inp, num_entry_inp,
-                           date_start_inp, date_end_inp, freq_inp,
-                           rho_inp, rho_het_inp){
+                           date_start_inp, date_end_inp, freq_inp){
   
   #generate factors from an AR 1 process
   factor_mat <-matrix(0, nrow=num_periods_inp,ncol = num_factors_inp )
   colnames(factor_mat) <- glue::glue("factor{1:num_factors_inp}")
   #ar model description -- AR 1 with auto correlation and sd inputs
-  ar_model=list(order=c(1,0,0), ar=rho_inp*rho_het_inp, sd=factor_sd_inp)
+  ar_model=list(order=c(1,0,0), ar=0.2)
   #TODO(alexdkellogg): check with AP if shocks trend over time, assumed fixed
   quarter_effects=tibble::tibble(q_shock=stats::runif(4, -1, 1), 
                                  quarter_num=seq_len(4))
@@ -159,38 +285,35 @@ generate_factors<-function(num_factors_inp, factor_sd_inp,
     dplyr::inner_join(quarter_effects, by="quarter_num") %>%
     dplyr::inner_join(month_effects, by="month_num")
   
+  
   #add first factor, period/total + noise
   factor_tib=factor_tib %>%
     dplyr::mutate(factor1=time/dplyr::n()+
-                    stats::rnorm(dplyr::n(),mean=0,sd=factor_sd_inp)) %>%
+                    stats::rnorm(dplyr::n(),mean=0,sd=0.1)) %>%
     dplyr::group_by(quarter_num) %>%
     dplyr::mutate(
-      factor2=stats::arima.sim(model=ar_model,
-                               n=500+dplyr::n())[seq(501,length.out =
-                                                            dplyr::n())]+
-        q_shock+stats::rnorm(dplyr::n(),mean=0,sd=factor_sd_inp)
-    )%>%
+      factor2=stats::arima.sim(model=ar_model, n=dplyr::n(),
+                               innov = q_shock+stats::rnorm(dplyr::n(),
+                                                            sd=0.1),
+                               n.start = 500)) %>%
     dplyr::ungroup() %>%
     dplyr::group_by(month_num) %>%
     dplyr::mutate(
-      factor3=stats::arima.sim(model=ar_model,
-                               n=500+dplyr::n())[seq(501,length.out =
-                                                       dplyr::n())]+
-        m_shock+stats::rnorm(dplyr::n(),mean=0,sd=factor_sd_inp)
-    ) %>%
+      factor3=stats::arima.sim(model=ar_model, n=dplyr::n(),
+                               innov = m_shock+stats::rnorm(dplyr::n(),
+                                                            sd=0.1),
+                               n.start = 500)) %>%
     dplyr::ungroup()
-  
   if(num_factors_inp>3){
     #this process works for one factor. Want to lapply to all columns >4
     extra_factors_names=setdiff(
       names(factor_tib %>% dplyr::select(tidyselect::contains("factor"))),
       c(glue::glue("factor{1:3}"))
       )
-    extra_factor_tib=furrr::future_map(.x=extra_factors_names,.f=~add_extra_factors(factor_tib=factor_tib,
+    extra_factor_tib=purrr::map(.x=extra_factors_names,
+                                       .f=~add_extra_factors(factor_tib=factor_tib,
                                  num_factors_inp=num_factors_inp,
                                  num_periods_inp=num_periods_inp,
-                                 rho_inp=rho_inp, factor_sd_inp=factor_sd_inp,
-                                 rho_het_inp=rho_het_inp, 
                                  ar_model_inp=ar_model, col_in = .x)) %>%
       dplyr::bind_cols() 
     
@@ -198,14 +321,16 @@ generate_factors<-function(num_factors_inp, factor_sd_inp,
       dplyr::select(-tidyselect::all_of(extra_factors_names)) %>%
       dplyr::bind_cols(extra_factor_tib)
   }
+  
   return(factor_tib %>% dplyr::select(-tidyselect::contains("shock")))
                   
 }
 
 
 add_extra_factors<-function(factor_tib,col_in,num_factors_inp,
-                            num_periods_inp, factor_sd_inp,
-                            rho_inp, rho_het_inp, ar_model_inp){
+                            num_periods_inp,
+                             ar_model_inp){
+  
   #compute the number shocks and their respective locations
   num_shocks=sample(1:13,1)
   shock_locs=c(0,sort(sample(1:52, size =num_shocks, replace = F )),52)
@@ -217,14 +342,14 @@ add_extra_factors<-function(factor_tib,col_in,num_factors_inp,
   
   shockXwalk=tibble::tibble(time=seq_len(num_periods_inp),
                             e_shocks=shock_seq)
-  
   factor_tib=factor_tib %>% 
     dplyr::left_join(shockXwalk, by="time") %>%
     dplyr::mutate(
     !!as.name(col_in):=
-      stats::arima.sim(model=ar_model_inp,n=500+dplyr::n())[seq(501,length.out = dplyr::n())]+
-      e_shocks+stats::rnorm(dplyr::n(),mean=0,sd=factor_sd_inp)
-  )
+      stats::arima.sim(model=ar_model_inp, n=dplyr::n(),
+                       innov = e_shocks+stats::rnorm(dplyr::n(),
+                                                     sd=0.1), 
+                       n.start = 500)) 
   
   return(factor_tib %>% dplyr::select(tidyselect::all_of(col_in)))
   
@@ -239,7 +364,9 @@ unit_level_simulation <- function(n_inp,
                                   loading_scale_inp,
                                   num_factors_inp,
                                   int_scale_inp,
-                                  rho_sd_inp,
+                                  rho_inp,
+                                  rho_scale_inp,
+                                  rho_shift_inp,
                                   prop_treated_inp,
                                   treat_start,
                                   num_periods_inp,
@@ -254,17 +381,23 @@ unit_level_simulation <- function(n_inp,
                cov_overlap_inp=cov_overlap_inp,
                loading_scale_inp=loading_scale_inp,
                num_factors_inp=num_factors_inp,
-               rho_sd_inp=rho_sd_inp,
+               rho_inp=rho_inp,
+               rho_scale_inp=rho_scale_inp,
+               rho_shift_inp=rho_shift_inp,
                int_scale_inp= int_scale_inp,
                prop_treated_inp=prop_treated_inp)
   
   #Merge in the treatment period assignment
   unit_level_tib=assign_treat_time(unit_level_tib, treat_start, num_periods_inp)
-  
+  #allow wiggle room for the TE without getting NA
+  impact_ub=ifelse(impact_mean_inp<0.25,0.25, 
+                   min(1, impact_mean_inp+(0.25)) )
+  impact_lb=ifelse(impact_mean_inp<=0,impact_mean_inp-0.25, 0)
+  decay_ub=ifelse(decay_mean_inp>0.9,1.000000001, 0.9)
   #assign treatment effect impact and decay parameters per unit
   unit_level_tib=unit_level_tib %>% 
     dplyr::mutate(
-      treat_impact=truncnorm::rtruncnorm(n=dplyr::n(), a=0,b=0.2, 
+      treat_impact=truncnorm::rtruncnorm(n=dplyr::n(), a=impact_lb,b=impact_ub, 
                                          mean=impact_mean_inp, sd=impact_sd_inp),
       treat_decay=truncnorm::rtruncnorm(n=dplyr::n(), a=0,b=0.9, 
                                         mean=decay_mean_inp, sd=decay_sd_inp))
@@ -310,9 +443,11 @@ time_interval_calculator <- function(start_t, end_t, freq_t){
 
 
 
-
+#TODO(alexdkellogg): discuss with AP difference between 
+#   overlap and selection (do we need both?)
 assign_treat<-function( n_inp, type_inp, cov_overlap_inp,
-                        loading_scale_inp,rho_sd_inp,num_factors_inp,
+                        loading_scale_inp,rho_inp=rho_inp, 
+                        rho_scale_inp,rho_shift_inp, num_factors_inp,
                         int_scale_inp, prop_treated_inp){
   #Creates a tibble with treatment assignment and time constant covariates
   #Covariate distribution can differ by treatment depending on cov_overlap_inp,
@@ -335,7 +470,9 @@ assign_treat<-function( n_inp, type_inp, cov_overlap_inp,
                                      loading_scale_inp=loading_scale_inp,
                                num_factors_inp=num_factors_inp,
                                      int_scale_inp=int_scale_inp,
-                                     rho_sd_inp=rho_sd_inp)
+                               rho_inp=rho_inp,
+                                     rho_scale_inp=rho_scale_inp,
+                               rho_shift_inp = rho_shift_inp)
     return(unit_tib)
   } 
   else{ 
@@ -366,24 +503,46 @@ assign_treat<-function( n_inp, type_inp, cov_overlap_inp,
                                loading_scale_inp=loading_scale_inp,
                                num_factors_inp=num_factors_inp,
                                int_scale_inp=int_scale_inp,
-                               rho_sd_inp=rho_sd_inp)
+                               rho_inp=rho_inp,
+                               rho_scale_inp=rho_scale_inp,
+                               rho_shift_inp = rho_shift_inp)
     
     return(unit_tib)
   }
 }
 
-
+#TODO(alexdkellogg): Do we want to adjust outcomes by autocorr (case_when)?
 generate_loadings <- function(treat_tib_inp, loading_scale_inp,num_factors_inp,
-                              int_scale_inp,rho_sd_inp){
+                              int_scale_inp,rho_inp, rho_scale_inp, rho_shift_inp){
   
   loadings_mat=matrix(0, nrow=nrow(treat_tib_inp), ncol=num_factors_inp)
   colnames(loadings_mat)=glue::glue("loading{1:num_factors_inp}")
   
+  
+  
+  mean_int=case_when(rho_inp<0.5~9,
+                    rho_inp<0.8~7.5,
+                    rho_inp<0.9~6.5,
+                    TRUE~5.5)
+  
+  stopifnot(mean_int-int_scale_inp>5,
+            mean_int-int_scale_inp<10)
+  
   tib_pre_loadings=treat_tib_inp %>% 
     dplyr::group_by(treated) %>%
     dplyr::mutate(
-      intercept=stats::rexp(dplyr::n(), 1+(1-treated)*int_scale_inp),
-      autocorr=stats::rnorm(n(), 0, rho_sd_inp)) %>%
+      #intercept=stats::rexp(dplyr::n(), 1+(1-treated)*int_scale_inp),
+      intercept=truncnorm::rtruncnorm(n=dplyr::n(), a=5,b=10,
+                                      mean=mean_int-(1-treated)*int_scale_inp,
+                                      sd=0.7),
+      #intercept=stats::runif(dplyr::n(), min=5,max=8-(1-treated)*int_scale_inp),
+      # autocorr=stats::runif(dplyr::n(),ifelse(treated,rho_inp,
+      #                                      rho_inp*rho_scale_inp),
+      #                       max=0.95),
+      autocorr=truncnorm::rtruncnorm(n=dplyr::n(), a=0,b=0.995,
+                                     mean=ifelse(treated,rho_inp,
+                                                 rho_inp*rho_shift_inp),
+                                     sd=rho_scale_inp)) %>%
     dplyr::bind_cols(tibble::as_tibble(loadings_mat)) %>%
     dplyr::ungroup()
   return(
@@ -401,6 +560,7 @@ generate_loadings <- function(treat_tib_inp, loading_scale_inp,num_factors_inp,
   
 }
 
+#TODO(alexdkellogg): Generalize to allow for user inputted number of xs
 gen_covariates<-function(n_inp, cov_overlap_inp, frac_shifted){
   #Generate several covariates, both observed and unobserved.
   #Shift means according to overlap_inp and frac_shifted 
@@ -454,10 +614,13 @@ assign_treat_time<-function(treat_tib_inp, treat_start, num_periods_inp){
                              TRUE~0.1 )
   #draw treatment period as first date plus geometric random variable
   return(treat_tib_inp %>% 
-           dplyr::mutate(treatment_period=dplyr::case_when(
-             treated==0~NA_real_,
-             treated==1~treat_start+stats::rgeom(dplyr::n(), geom_prob)),
-             treatment_period=min(treatment_period,num_periods_inp)))
+           dplyr::mutate(
+             treatment_period=treat_start+
+               stats::rgeom(dplyr::n(), geom_prob)) %>%
+           dplyr::group_by(entry) %>%
+           dplyr::mutate(treatment_period=
+                           min(treatment_period,num_periods_inp)) %>%
+           dplyr::ungroup())
   
 }
 
