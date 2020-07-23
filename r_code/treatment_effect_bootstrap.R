@@ -19,6 +19,8 @@ library(quadprog)
 library(rstatix)
 library(ForecastComb)
 
+source(here("r_code/analysis_metrics.R"))
+
 
 compute_cf_tot <- function(tib_inp, stat_in_inp,t_var_inp,
                            treat_t_inp, outcome_inp, cf_inp){
@@ -66,7 +68,7 @@ compute_cf_tot <- function(tib_inp, stat_in_inp,t_var_inp,
 }
 
 
-#TODO(alexdkellogg): keep cleaning this code to cut it down -- use format jackknife
+
 compute_tot_se_jackknife <- function(estimated_series_df, time_var = "period", treat_period_var = "Treatment_Period",
                                      pred_var = "point.pred", outcome_var = "response",
                                      stat_in = "mean", alpha_ci = 0.95,
@@ -111,9 +113,9 @@ compute_tot_se_jackknife <- function(estimated_series_df, time_var = "period", t
   jk_comp_abs<- switch (stat_in,
                         "mean" =  jk_comp_abs %>% 
                           furrr::future_map(~ jackknife(., mean)),
-                        "median"= jkcomp_abs %>% 
+                        "median"= jk_comp_abs %>% 
                           furrr::future_map(~ jackknife(., median)),
-                        "aggregate"=jkcomp_abs %>% 
+                        "aggregate"=jk_comp_abs %>% 
                           furrr::future_map(~ jackknife(., sum))
   )
   jk_comp_pct<-effects_to_jk %>%
@@ -129,92 +131,30 @@ compute_tot_se_jackknife <- function(estimated_series_df, time_var = "period", t
                             (sum(x[[outcome_var]]) / sum(x[[pred_var]])) - 1
                           }))
   )
-  
-  
-  statname_abs <- paste("jackknife_", stat_in, "_abs_tot", sep = "")
-  statname_pct <- paste("jackknife_", stat_in, "_pct_tot", sep = "")
-  obs_statname_abs <- paste("observed_", stat_in, "_abs_tot", sep = "")
-  obs_statname_pct <- paste("observed_", stat_in, "_pct_tot", sep = "")
-  jackknife_comp_ci_abs <- furrr::future_pmap(list(jk_comp_abs, list(probs = c(0.5 - alpha_ci / 2, 0.5 + alpha_ci / 2))), CI.t) %>%
-    do.call(rbind, .) %>%
-    as_tibble() %>%
-    mutate(post_period_t = effect_series_postonly %>% 
-             distinct(post_period_t) %>%
-             pull()) %>%
-    mutate(
-      !!as.name(statname_abs) := jk_comp_abs %>% 
-        furrr::future_map(~ .[["stats"]]) %>% 
-        furrr::future_map(~ .[["Mean"]]) %>%
-        unlist(),
-      !!as.name(obs_statname_abs) := jk_comp_abs %>% 
-        furrr::future_map(~ .[["stats"]]) %>% 
-        furrr::future_map(~ .[["Observed"]]) %>%
-        unlist()
-    )
-  names(jackknife_comp_ci_abs)[1:2] <- c("jackknife_lb_abs_tot", "jackknife_ub_abs_tot")
-  
-  jackknife_comp_ci_pct <- furrr::future_pmap(list(jk_comp_pct,
-                                                   list(probs = c(0.5 - alpha_ci / 2, 0.5 + alpha_ci / 2))), CI.t) %>%
-    do.call(rbind, .) %>%
-    as_tibble() %>%
-    mutate(post_period_t = effect_series_postonly %>%
-             distinct(post_period_t) %>%
-             pull()) %>%
-    mutate(
-      !!as.name(statname_pct) := jk_comp_pct %>%
-        furrr::future_map(~ .[["stats"]]) %>% 
-        furrr::future_map(~ .[["Mean"]]) %>%
-        unlist(),
-      !!as.name(obs_statname_pct) := jk_comp_pct %>% 
-        furrr::future_map(~ .[["stats"]]) %>% 
-        furrr::future_map(~ .[["Observed"]]) %>%
-        unlist()
-    )
-  
-  names(jackknife_comp_ci_pct)[1:2] <- c("jackknife_lb_pct_tot", "jackknife_ub_pct_tot")
-  
-  jackknife_comp_ci <- jackknife_comp_ci_abs %>% inner_join(jackknife_comp_ci_pct, by = "post_period_t")
-  # Manual version of the above code
-  # jackknife_mean_bias= jackknife_comp%>% furrr::future_map(~ .$"stats") %>% furrr::future_map(~ .$"Mean") %>%
-  #   unlist() %>% tibble("de_biased_mean"=.,  "post_period_t"=effect_series_postonly %>% distinct(post_period_t) %>% pull())
-  #
-  # jackknife_se=jackknife_comp%>% furrr::future_map(~ .$"stats") %>% furrr::future_map(~ .$"SE") %>%
-  #   unlist() %>% tibble("se"=.,"post_period_t"=effect_series_postonly %>% distinct(post_period_t) %>% pull())
-  
-  
-  stat_tot_sample <- effect_series_postonly %>%
-    group_by(post_period_t) %>%
-    summarise(treated_n = n()) %>%
-    ungroup()
-  
-  
-  if (compute_cf_eff) {
-    jackknife_ci_by_postperiod <- stat_tot_sample %>%
-      left_join(
-        jackknife_comp_ci,
-        by = "post_period_t"
-      ) %>%
-      left_join(
-        cf_tot_df,
-        by = "post_period_t"
-      )
+  #Gather the bounds on the confidence intervals and format as tibble
+  jk_comp_ci <-format_jackknife(
+    jk_est=jk_comp_abs,ci_in=alpha_ci,col_name= 
+      paste(stat_in,"_abs_tot", sep="")) %>%
+    dplyr::inner_join(
+      format_jackknife(jk_est=jk_comp_pct,ci_in=alpha_ci, col_name= 
+                         paste(stat_in,"_pct_tot",sep="")), by="post_period_t")
+  #Add the number of treated units per period
+  jk_ci_byT <- effect_series_postonly %>%
+    dplyr::group_by(post_period_t) %>%
+    dplyr::summarise(treated_n = n()) %>%
+    dplyr::ungroup() %>%
+    dplyr::inner_join(jk_comp_ci, by="post_period_t")
+  #Add counterfactual if relevant
+  if(compute_cf_eff){
+    jk_ci_byT %>% dplyr::inner_join(cf_tot_df,by = "post_period_t")
   }
-  if (!compute_cf_eff) {
-    jackknife_ci_by_postperiod <- stat_tot_sample %>% 
-      left_join(
-        jackknife_comp_ci,
-        by = "post_period_t"
-      )
-  }
-  
-  
-  return(jackknife_ci_by_postperiod)
+  return(jk_ci_byT)
 }
 
 
 
 
-#TODO(alexdkellogg): keep cleaning this code to cut it down; use the CF helper.
+
 compute_ci_bounds_bootstrap <- function(estimated_series_df, time_var = "period", treat_period_var = "Treatment_Period",
                                         pred_var = "point.pred", outcome_var = "response",
                                         stat_in = "mean", alpha_ci = 0.95,
@@ -237,167 +177,76 @@ compute_ci_bounds_bootstrap <- function(estimated_series_df, time_var = "period"
   # Tibble containing, by post_treat_period, the sample stat and bootstrapped mean of boot_var, as well as upper and lower bounds
   # that make up the alpha_ci*100% confidence interval
   
+  #Generate a post treatment time indicator -- time since treatment.
   effect_series_postonly <- estimated_series_df %>%
     mutate(post_period_t = !!as.name(time_var) - !!as.name(treat_period_var)) %>%
     filter(post_period_t >= 0)
   
+  #Compute the relevant effect using the counterfactual data
   if (compute_cf_eff) {
-    cf_tot_df <- estimated_series_df %>%
-      mutate(post_period_t = !!as.name(time_var) - !!as.name(treat_period_var)) %>%
-      filter(post_period_t >= 0)
-    if (tolower(stat_in) == "aggregate") {
-      cf_tot_df <- cf_tot_df %>%
-        group_by(post_period_t) %>%
-        summarise(
-          agg_abs_cf_tot = sum(!!as.name(outcome_var) - !!as.name(counterfac_var)),
-          agg_pct_cf_tot = (sum(!!as.name(outcome_var)) / sum(!!as.name(counterfac_var))) - 1
-        ) %>%
-        ungroup()
-    }
-    if (tolower(stat_in) == "mean") {
-      cf_tot_df <- cf_tot_df %>%
-        group_by(post_period_t) %>%
-        summarise(
-          mean_cf_tot = mean(!!as.name(counterfac_var)),
-          mean_pct_cf_tot = mean((!!as.name(outcome_var) / !!as.name(counterfac_var)) - 1)
-        ) %>%
-        ungroup()
-    }
-    if (tolower(stat_in) == "median") {
-      cf_tot_df <- cf_tot_df %>%
-        group_by(post_period_t) %>%
-        summarise(
-          median_abs_cf_tot = median(!!as.name(outcome_var) - !!as.name(counterfac_var)),
-          median_pct_cf_tot = median((!!as.name(outcome_var) / !!as.name(counterfac_var)) - 1)
-        ) %>%
-        ungroup()
-    }
+    cf_tot_df<-compute_cf_tot(tib_inp=estimated_series_df,
+                              stat_in_inp=stat_in,t_var_inp=time_var,
+                              treat_t_inp=treat_period_var,
+                              outcome_inp=outcome_var, cf_inp=counterfac_var)
   }
   
-  # is the double future-map here the slow thing? How does the speed compare to lapply?
-  if (tolower(stat_in) == "aggregate") {
-    # Parallelized computation of the pre-treatment range, by id_var
-    bootstrap_comp_abs <- effect_series_postonly %>%
-      mutate(abs_eff = !!as.name(outcome_var) - !!as.name(pred_var)) %>%
-      split(.[["post_period_t"]]) %>%
-      furrr::future_map(~ .[["abs_eff"]]) %>%
-      furrr::future_map(~ bootstrap(., mean, R = nboots))
+  #Generate a list of observed effects by time-since-treatment
+  effects_to_boot<-effect_series_postonly %>%
+    dplyr::mutate(abs_eff = !!as.name(outcome_var) - !!as.name(pred_var),
+                  pct_eff = (!!as.name(outcome_var) / !!as.name(pred_var)) - 1) %>%
+    split(.[["post_period_t"]])
+  
+  boot_comp_abs<-effects_to_boot %>%
+    furrr::future_map(~ .[["abs_eff"]])
+  #Jackknife the relevant statistic for both absolute and percentage terms
+  boot_comp_abs<- switch (stat_in,
+                        "mean" =  boot_comp_abs %>% 
+                          furrr::future_map(~ bootstrap(., mean, R = nboots)),
+                        "median"= boot_comp_abs %>% 
+                          furrr::future_map(~ bootstrap(., median, R = nboots)),
+                        "aggregate"=boot_comp_abs %>% 
+                          furrr::future_map(~ bootstrap(., sum, R = nboots))
+  )
+  boot_comp_pct<-effects_to_boot %>%
+    furrr::future_map(~ .[["pct_eff"]])
+  #Jackknife the relevant statistic for both absolute and percentage terms
+  boot_comp_pct<- switch (stat_in,
+                        "mean" =  boot_comp_pct %>% 
+                          furrr::future_map(~ bootstrap(., mean, R = nboots)),
+                        "median"= boot_comp_pct %>% 
+                          furrr::future_map(~ bootstrap(., median, R = nboots)),
+                        "aggregate"=boot_comp_pct %>% 
+                          furrr::future_map(~ bootstrap(., function(x) {
+                            (sum(x[[outcome_var]]) / sum(x[[pred_var]])) - 1
+                          }, R = nboots))
+  )
+  #Gather the bounds on the confidence intervals and format as tibble
+  boot_comp_ci <-format_jackknife(
+    jk_est=boot_comp_abs,ci_in=alpha_ci,col_name= 
+      paste(stat_in,"_abs_tot", sep="")) %>%
+    dplyr::inner_join(
+      format_jackknife(jk_est=boot_comp_pct,ci_in=alpha_ci, col_name= 
+                         paste(stat_in,"_pct_tot",sep="")), 
+      by="post_period_t") %>%
+    rename_with( ~stringr::str_replace(.x,"jackknife", "bootstrap"),
+                 tidyr::starts_with("jackknife"))
     
-    bootstrap_comp_pct <- effect_series_postonly %>%
-      split(.[["post_period_t"]]) %>%
-      furrr::future_map(~ bootstrap(., function(x) {
-        (sum(x[[outcome_var]]) / sum(x[[pred_var]])) - 1
-      }, R = nboots))
+  #Add the number of treated units per period
+  boot_ci_byT <- effect_series_postonly %>%
+    dplyr::group_by(post_period_t) %>%
+    dplyr::summarise(treated_n = n()) %>%
+    dplyr::ungroup() %>%
+    dplyr::inner_join(boot_comp_ci, by="post_period_t")
+  #Add counterfactual if relevant
+  if(compute_cf_eff){
+    boot_ci_byT %>% dplyr::inner_join(cf_tot_df,by = "post_period_t")
   }
-  if (tolower(stat_in) == "mean") {
-    # Parallelized computation of the pre-treatment range, by id_var
-    bootstrap_comp_abs <- effect_series_postonly %>%
-      mutate(abs_eff = !!as.name(outcome_var) - !!as.name(pred_var)) %>%
-      split(.[["post_period_t"]]) %>%
-      furrr::future_map(~ .[["abs_eff"]]) %>%
-      furrr::future_map(~ bootstrap(., mean, R = nboots))
-    
-    # Parallelized computation of the pre-treatment range, by id_var
-    bootstrap_comp_pct <- effect_series_postonly %>%
-      mutate(pct_eff = (!!as.name(outcome_var) / !!as.name(pred_var)) - 1) %>%
-      split(.[["post_period_t"]]) %>%
-      furrr::future_map(~ .[["pct_eff"]]) %>%
-      furrr::future_map(~ bootstrap(., mean, R = nboots))
-  }
-  
-  if (tolower(stat_in) == "median") {
-    # Parallelized computation of the pre-treatment range, by id_var
-    bootstrap_comp_abs <- effect_series_postonly %>%
-      mutate(abs_eff = !!as.name(outcome_var) - !!as.name(pred_var)) %>%
-      split(.[["post_period_t"]]) %>%
-      furrr::future_map(~ .[["abs_eff"]]) %>%
-      furrr::future_map(~ bootstrap(., median, R = nboots))
-    
-    # Parallelized computation of the pre-treatment range, by id_var
-    bootstrap_comp_pct <- effect_series_postonly %>%
-      mutate(pct_eff = (!!as.name(outcome_var) / !!as.name(pred_var)) - 1) %>%
-      split(.[["post_period_t"]]) %>%
-      furrr::future_map(~ .[["pct_eff"]]) %>%
-      furrr::future_map(~ bootstrap(., median, R = nboots))
-  }
-  
-  statname_abs <- paste("bootstrap_", stat_in, "_abs_tot", sep = "")
-  statname_pct <- paste("bootstrap_", stat_in, "_pct_tot", sep = "")
-  obs_statname_abs <- paste("observed_", stat_in, "_abs_tot", sep = "")
-  obs_statname_pct <- paste("observed_", stat_in, "_pct_tot", sep = "")
-  bootstrap_comp_ci_abs <- furrr::future_pmap(list(bootstrap_comp_abs, list(probs = c(0.5 - alpha_ci / 2, 0.5 + alpha_ci / 2))), CI.t) %>%
-    do.call(rbind, .) %>%
-    as_tibble() %>%
-    mutate(post_period_t = effect_series_postonly %>%
-             distinct(post_period_t) %>% 
-             pull()) %>%
-    mutate(
-      !!as.name(statname_abs) := bootstrap_comp_abs %>% 
-        furrr::future_map(~ .[["stats"]]) %>% 
-        furrr::future_map(~ .[["Mean"]]) %>%
-        unlist(),
-      !!as.name(obs_statname_abs) := bootstrap_comp_abs %>% 
-        furrr::future_map(~ .[["stats"]]) %>% 
-        furrr::future_map(~ .[["Observed"]]) %>%
-        unlist()
-    )
-  names(bootstrap_comp_ci_abs)[1:2] <- c("bootstrap_lb_abs_tot", "bootstrap_ub_abs_tot")
-  
-  bootstrap_comp_ci_pct <- furrr::future_pmap(list(bootstrap_comp_pct, list(probs = c(0.5 - alpha_ci / 2, 0.5 + alpha_ci / 2))), CI.t) %>%
-    do.call(rbind, .) %>%
-    as_tibble() %>%
-    mutate(post_period_t = effect_series_postonly %>%
-             distinct(post_period_t) %>%
-             pull()) %>%
-    mutate(
-      !!as.name(statname_pct) := bootstrap_comp_pct %>% 
-        furrr::future_map(~ .[["stats"]]) %>% 
-        furrr::future_map(~ .[["Mean"]]) %>%
-        unlist(),
-      !!as.name(obs_statname_pct) := bootstrap_comp_pct %>% 
-        furrr::future_map(~ .[["stats"]]) %>% 
-        furrr::future_map(~ .[["Observed"]]) %>%
-        unlist()
-    )
-  names(bootstrap_comp_ci_pct)[1:2] <- c("bootstrap_lb_pct_tot", "bootstrap_ub_pct_tot")
-  
-  bootstrap_comp_ci <- bootstrap_comp_ci_abs %>% inner_join(bootstrap_comp_ci_pct, by = "post_period_t")
-  
-  
-  stat_tot_sample <- effect_series_postonly %>%
-    group_by(post_period_t) %>%
-    summarise(treated_n = n()) %>%
-    ungroup()
-  
-  
-  
-  if (compute_cf_eff) {
-    bootstrap_ci_by_postperiod <- stat_tot_sample %>%
-      left_join(
-        bootstrap_comp_ci,
-        by = "post_period_t"
-      ) %>%
-      left_join(
-        cf_tot_df,
-        by = "post_period_t"
-      )
-  }
-  if (!compute_cf_eff) {
-    bootstrap_ci_by_postperiod <- stat_tot_sample %>% left_join(
-      bootstrap_comp_ci,
-      by = "post_period_t"
-    )
-  }
-  
-  
-  
-  return(bootstrap_ci_by_postperiod)
+  return(boot_ci_byT)
 }
+  
 
 
-#TODO(alexdkellogg): Should there be weights based on num of treated entries?
-#  in one sample, could be 750 treated at post=15, vs 600 in the other
-#  Should we jackknife the bias directly?
+
 compute_jackknife_bias<-function(tot_list, alpha_ci = 0.95){
   tot_tib=tot_list %>% dplyr::bind_rows()
 
@@ -406,17 +255,13 @@ compute_jackknife_bias<-function(tot_list, alpha_ci = 0.95){
   effect_var_pct<-names(tot_tib %>%
                           dplyr::select(tidyselect::matches("observed.*pct")))
 
-  cfvar_pct<-names(tot_tib %>%
-                     dplyr::select(tidyselect::contains("pct_cf")))
+  cfvar_pct<-names(tot_tib %>% dplyr::select(tidyselect::contains("pct_cf")))
   
   cfvar_abs<-setdiff(names(tot_tib %>%
                              dplyr::select(tidyselect::contains("cf"))),
                      cfvar_pct)
-    
-
-
-
-  jackknife_comp_abs <- tot_tib %>%
+  
+  jk_comp_abs <- tot_tib %>%
     dplyr::mutate(bias=!!as.name(effect_var_abs)-!!as.name(cfvar_abs)) %>%
     split(.[["post_period_t"]]) %>%
     furrr::future_map(~ .[["bias"]]) %>%
@@ -426,64 +271,22 @@ compute_jackknife_bias<-function(tot_list, alpha_ci = 0.95){
   # dplyr::group_by(post_period_t) %>%
   #   dplyr::mutate(weighted_avg = sum(treated_n*!!as.name(effect_var_abs))/sum(treated_n) )%>%
 
-  jackknife_comp_pct <- tot_tib %>%
+  jk_comp_pct <- tot_tib %>%
     dplyr::mutate(bias=!!as.name(effect_var_pct)-!!as.name(cfvar_pct)) %>%
     split(.[["post_period_t"]]) %>%
     furrr::future_map(~ .[["bias"]]) %>%
     furrr::future_map(~ jackknife(., mean))
-  
 
-  #get the 95% CI for the jackknife over post treat time and dataset
-  statname_abs <- paste("jackknife_abs_bias", sep = "")
-  statname_pct <- paste("jackknife_pct_bias", sep = "")
-  obs_statname_abs <- paste("observed_abs_bias", sep = "")
-  obs_statname_pct <- paste("observed_pct_bias", sep = "")
-  jackknife_comp_ci_abs <- furrr::future_pmap(list(jackknife_comp_abs, list(probs = c(0.5 - alpha_ci / 2, 0.5 + alpha_ci / 2))), CI.t) %>%
-    do.call(rbind, .) %>%
-    as_tibble() %>%
-    mutate(post_period_t = tot_tib %>% 
-             distinct(post_period_t) %>%
-             pull()) %>%
-    mutate(
-      !!as.name(statname_abs) := jackknife_comp_abs %>% 
-        furrr::future_map(~ .[["stats"]]) %>% 
-        furrr::future_map(~ .[["Mean"]]) %>%
-        unlist(),
-      !!as.name(obs_statname_abs) := jackknife_comp_abs %>% 
-        furrr::future_map(~ .[["stats"]]) %>% 
-        furrr::future_map(~ .[["Observed"]]) %>%
-        unlist()
-    )
-  
-  names(jackknife_comp_ci_abs)[1:2] <- c("jackknife_lb_abs_bias", "jackknife_ub_abs_bias")
-  
-  jackknife_comp_ci_pct <- furrr::future_pmap(list(jackknife_comp_pct,
-                                                   list(probs = c(0.5 - alpha_ci / 2, 0.5 + alpha_ci / 2))), CI.t) %>%
-    do.call(rbind, .) %>%
-    as_tibble() %>%
-    mutate(post_period_t = tot_tib %>%
-             distinct(post_period_t) %>%
-             pull()) %>%
-    mutate(
-      !!as.name(statname_pct) := jackknife_comp_pct %>%
-        furrr::future_map(~ .[["stats"]]) %>% 
-        furrr::future_map(~ .[["Mean"]]) %>%
-        unlist(),
-      !!as.name(obs_statname_pct) := jackknife_comp_pct %>% 
-        furrr::future_map(~ .[["stats"]]) %>% 
-        furrr::future_map(~ .[["Observed"]]) %>%
-        unlist()
-    )
-  
-  names(jackknife_comp_ci_pct)[1:2] <- c("jackknife_lb_pct_bias", "jackknife_ub_pct_bias")
-  
-  jackknife_comp_ci <- jackknife_comp_ci_abs %>% inner_join(jackknife_comp_ci_pct, by = "post_period_t") %>%
+  #Gather the bounds on the confidence intervals and format as tibble
+  jk_comp_ci <-format_jackknife(
+    jk_est=jk_comp_abs,ci_in=alpha_ci,col_name= 
+      paste(stat_in,"_abs_bias", sep="")) %>%
+    dplyr::inner_join(
+      format_jackknife(jk_est=jk_comp_pct,ci_in=alpha_ci, col_name= 
+                         paste(stat_in,"_pct_bias",sep="")), 
+      by="post_period_t") %>%
     dplyr::select(post_period_t, dplyr::everything()) %>%
     dplyr::mutate(cf_bias_pct=0, cf_bias_abs=0)
-  
-  
 
-  
-  return(jackknife_comp_ci)
-  
+  return(jk_comp_ci)
 }
