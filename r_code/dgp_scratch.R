@@ -39,6 +39,24 @@ gsynth_ife_pct_coverage_AA=future_map(gsynth_ife_bootstrapped_pct_att_AA, comput
 
 
 
+# #change counter_factual to y0 and target to y1
+# #
+# tic("Starting DGP")
+# AA_data_no_sel=future_map(.x=seeds, .f=~gen_data_lubr(N=100, date_start="2018-01-01",
+#                          first_treat="2019-01-01", date_end="2020-07-04", 
+#                          tau_one_zero=0, T_freq = "weekly",
+#                          gamma=0, prop_treated=0.25, rho_y=0.3, type="random", seed=.x))
+# toc()
+
+tic("Estimating Gsynth")
+gsynth_AA=future_map(AA_data_no_sel, estimate_gsynth_series, se_est=F, outcome_var="y", counterfac_var="y0")
+gsynth_tot_AA=future_map(gsynth_AA, compute_tot_se_jackknife, counterfac_var="counter_factual")
+toc()
+
+
+
+
+
 
 
 

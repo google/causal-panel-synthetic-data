@@ -1,325 +1,95 @@
-####################################################
-# Start Example:
-
-#First, need to load in the "causal_panel_benchmark_functions.R" file and functions
-####################################################
+library(dplyr)
+library(furrr)
 library(here)
-#still an issue about where you open from -- if the file itself in r_code, then don't need the r_code part.
-source(here("/r_code/causal_panel_benchmark_functions_v2.R"))
-source(here("/r_code/placebo_creation.R"))
-
-set.seed(42)
-
-
 library(tictoc)
 
-#First step: ingest data into a list of DF.
-
-# data_list <-list.files(here("Data/"), pattern = "^synthetic_data_v.*csv$") %>% paste(here(),"/Data/",., sep="") %>%
-#   lapply(.,read_csv) %>% map(., ~ (.x %>% dplyr::select(-X1))) %>%
-#   map(., ~ (.x %>% mutate(period=case_when(
-#     min(period)==0~period+1,
-#     TRUE~period
-#   ))  )) %>% map(~clean_names(.))
-# #Rename the list so that each element (df) is labelled properly
-# names(data_list)=list.files(pattern = "^synthetic_data_v.*csv$")
-
-
-# data_list <-list.files(here("Data/"), pattern = "^synthetic_data_med.*csv$") %>% paste(here(),"/Data/",., sep="") %>%
-#   lapply(.,read_csv) %>% map(., ~ (.x %>% dplyr::select(-X1))) %>%
-#   map(., ~ (.x %>% mutate(period=case_when(
-#     min(period)==0~period+1,
-#     TRUE~period
-#   ))  )) %>% map(~clean_names(.))
-# #Rename the list so that each element (df) is labelled properly
-# names(data_list)=list.files(pattern = "^synthetic_data_med.*csv$")
-
-
-data_list <-list.files(here("Data/"), pattern = "^synthetic_data_small.*csv$") %>% paste(here(),"/Data/",., sep="") %>%
-  lapply(.,read_csv) %>% map(., ~ (.x %>% dplyr::select(-X1))) %>%
-  map(., ~ (.x %>% mutate(period=case_when(
-    min(period)==0~period+1,
-    TRUE~period
-  ))  )) %>% map(~janitor::clean_names(.))
-#Rename the list so that each element (df) is labelled properly
-names(data_list)=list.files(pattern = "^synthetic_data_small.*csv$")
-
-
-################################################
-#Compute the AB results
-################################################
-plan(multisession, workers=availableCores()-1)
-
+source(here("r_code/panel_estimation.R"))
+source(here("r_code/analysis_metrics.R"))
+source(here("r_code/analysis_visualizations.R"))
+source(here("r_code/treatment_effect_bootstrap.R"))
+source(here("r_code/factor_DGP.R"))
 cluster_v1=makeClusterPSOCK(5)
 plan(cluster, workers=cluster_v1)
-#GSYNTH IFE PROCESS
-#estimate the series of impacts
-tic()
-gsynth_ife_AB=future_pmap(list(data_list, se_est=F), estimate_gsynth_series)
-toc()
-#get bootstrapped CIs, counterfactual effects
+set.seed(1982)
+n_seeds <- 50
+seeds <- sample(1000:9999, size = n_seeds)
 
+options(future.globals.maxSize= 891289600) #850mb=850*1024^2
+tic("Starting DGP")
+AA_data_no_sel_unformatted=future_map(.x=seeds, .f=~factor_synthetic_dgp(date_start="2010-01-01",
+                                                             first_treat="2017-07-01",
+                                                             date_end="2020-01-01",
+                                                             treat_impact_sd = 0, 
+                                                             treat_impact_mean = 0, 
+                                                             rho=0.9,
+                                                             rescale_y_mean = 2.5e3,
+                                                             cov_overlap_scale = 0,
+                                                             seed=.x))
 
-gsynth_ife_bootstrapped_pct_att_AB=future_pmap(list(gsynth_ife_AB,  counterfac_var="counter_factual" ), compute_tot_se_jackknife)
-#store gap plots
-gsynth_ife_bootstrapped_pct_att_AB_plots=future_pmap(list(gsynth_ife_bootstrapped_pct_att_AB,
-                                                          plot_title="Gsynth Mean ToT by Post Treat Period, Jackknife CI", plot_x_lab="Post Treat Period", plot_y_lab="Mean ToT"),create_gap_ci_plot)
-#compute MSE and MAE bu post period
-gsynth_ife_pct_metric_byT_AB=future_pmap(list(gsynth_ife_AB, metric_str="both", pct_eff_flag=T),compute_avg_metric_per_t)
-#compute overall MSE, MAE
-gsynth_ife_pct_metric_AB=future_pmap(list(gsynth_ife_AB, metric_str="both", pct_eff_flag=T),compute_avg_metric)
-#compute "coverage" -- not sure if that's exactly it, but the frac of time the true TE is in the bounds
-gsynth_ife_pct_coverage_AB=future_map(gsynth_ife_bootstrapped_pct_att_AB, compute_tot_coverage)
-
-
-Sys.sleep(19)
-
-
-#SCDID PROCESS
-tic()
-scdid_results_AB=future_map(data_list, estimate_scdid_series,
-                            id_var="entry",time_var="period", (treat_indicator="treatperiod_0"),  (outcome_var="target"),
-                            (counterfac_var="counter_factual"),(pre_SDID = 0), (post_SDID = NULL),
-                            (nn_SDID = NULL),  (scale_SDID = 100),  (period_SDID = 30))
-
+AA_data_no_sel=future_map(AA_data_no_sel_unformatted, format_for_est)
 toc()
 
 
 
 
-#get bootstrapped CIs, counterfactual effects
-scdid_bootstrapped_pct_att_AB=future_pmap(list(scdid_results_AB, counterfac_var="counter_factual"),compute_tot_se_jackknife)
-#store gap plots
-scdid_bootstrapped_pct_att_AB_plots=future_pmap(list(scdid_bootstrapped_pct_att_AB,
-                                                     plot_title="SCDID Mean ToT by Post Treat Period, Jackknife CI", plot_x_lab="Post Treat Period", plot_y_lab="Mean ToT"),create_gap_ci_plot)
-#compute MSE and MAE bu post period
-scdid_pct_metric_byT_AB=future_pmap(list(scdid_results_AB, metric_str="both", pct_eff_flag=T),compute_avg_metric_per_t)
-#compute overall MSE, MAE
-scdid_pct_metric_AB=future_pmap(list(scdid_results_AB, metric_str="both", pct_eff_flag=T),compute_avg_metric)
-#compute "coverage" -- not sure if that's exactly it, but the frac of time the true TE is in the bounds
-scdid_pct_coverage_AB=future_map(scdid_bootstrapped_pct_att_AB, compute_tot_coverage)
+tic("Estimating Gsynth")
 
+gsynth_AA=future_map(AA_data_no_sel, estimate_gsynth_series, se_est=F,
+                     normalize_flag=T)
+gsynth_tot_AA=future_map(gsynth_AA, compute_tot_se_jackknife, stat_in="mean")
+gsynth_AA_plots=future_map(gsynth_tot_AA,
+                           create_gap_ci_plot,plot_title="Gsynth Mean ToT by 
+                           Post Treat Period, Jackknife CI", plot_x_lab="Post
+                           Treat Period", plot_y_lab="Mean ToT")
+gsynth_AA_metrics_byT=future_map(gsynth_AA,compute_avg_metric_per_t,
+                              metric_str="mae", pct_eff_flag=T)
+gsynth_AA_metrics=future_map(gsynth_AA,compute_avg_metric,
+                              metric_str="both", pct_eff_flag=T)
 
+gsynth_AA_coverage=future_map(gsynth_tot_AA, 
+                              compute_tot_coverage)
 
-#Gsynth IFE EM PROCESS
-# gsynth_ife_EM_AB=future_map(data_list, estimate_gsynth_series, se_est=F, EM_flag=T)
-# #get bootstrapped CIs, counterfactual effects
-# gsynth_ife_EM_bootstrapped_pct_att_AB=future_pmap(list(gsynth_ife_EM_AB,counterfac_var="counter_factual" ),compute_tot_se_jackknife)
-# #store gap plots
-# gsynth_ife_EM_bootstrapped_pct_att_AB_plots=future_pmap(list(gsynth_ife_EM_bootstrapped_pct_att_AB),create_gap_ci_plot)
-# #compute MSE and MAE bu post period
-# gsynth_ife_EM_pct_metric_byT_AB=future_pmap(list(gsynth_ife_EM_AB,  metric_str="both", pct_eff_flag=T),compute_avg_metric_per_t)
-# #compute overall MSE, MAE
-# gsynth_ife_EM_pct_metric_AB=future_pmap(list(gsynth_ife_EM_AB,  metric_str="both", pct_eff_flag=T),compute_avg_metric)
-# #compute "coverage" -- not sure if that's exactly it, but the frac of time the true TE is in the bounds
-# gsynth_ife_EM_pct_coverage_AB=future_map(gsynth_ife_EM_bootstrapped_pct_att_AB, compute_tot_coverage)
-
-
-Sys.sleep(19)
-#Gsynth MC PROCESS
-tic()
-gsynth_mc_AB=future_map(data_list, estimate_gsynth_series, se_est=F, estimator_type="mc")
-toc()
-
-#get bootstrapped CIs, counterfactual effects
-gsynth_mc_bootstrapped_pct_att_AB=future_pmap(list(gsynth_mc_AB,counterfac_var="counter_factual" ),compute_tot_se_jackknife)
-#store gap plots
-gsynth_mc_bootstrapped_pct_att_AB_plots=future_pmap(list(gsynth_mc_bootstrapped_pct_att_AB),create_gap_ci_plot)
-#compute MSE and MAE bu post period
-gsynth_mc_pct_metric_byT_AB=future_pmap(list(gsynth_mc_AB,  metric_str="both", pct_eff_flag=T),compute_avg_metric_per_t)
-#compute overall MSE, MAE
-gsynth_mc_pct_metric_AB=future_pmap(list(gsynth_mc_AB,  metric_str="both", pct_eff_flag=T),compute_avg_metric)
-#compute "coverage" -- not sure if that's exactly it, but the frac of time the true TE is in the bounds
-gsynth_mc_pct_coverage_AB=future_map(gsynth_mc_bootstrapped_pct_att_AB, compute_tot_coverage)
-
-
-
-#Causal Impact PRocess
-#Gsynth MC PROCESS
-
-Sys.sleep(19)
-tic()
-causalimpact_results_AB=future_map(data_list, estimate_causalimpact_series)
+gsynth_AA_bias=compute_jackknife_bias(gsynth_tot_AA)
+gsynth_bias_plot=create_gap_ci_plot(gsynth_AA_bias, 
+                                    plot_title="Gsynth Jackknife bias Post Treat Period", 
+                                    plot_x_lab="Post-Treat Time",
+                                    plot_y_lab="ATT Bias (%)")
+gsynth_overall_metrics=compute_jackknife_metrics(gsynth_AA, horizon = 5)
 toc()
 
 
-#get bootstrapped CIs, counterfactual effects
-causalimpact_bootstrapped_pct_att_AB=future_pmap(list(causalimpact_results_AB, counterfac_var="counter_factual" ),compute_tot_se_jackknife)
-#store gap plots
-causalimpact_bootstrapped_pct_att_AB_plots=future_pmap(list(causalimpact_bootstrapped_pct_att_AB,
-                                                            plot_title="Causal Impact Mean ToT by Post Treat Period, Jackknife CI", plot_x_lab="Post Treat Period", plot_y_lab="Mean ToT"),create_gap_ci_plot)
-#compute MSE and MAE bu post period
-causalimpact_pct_metric_byT_AB=future_pmap(list(causalimpact_results_AB,  metric_str="both", pct_eff_flag=T),compute_avg_metric_per_t)
-#compute overall MSE, MAE
-causalimpact_pct_metric_AB=future_pmap(list(causalimpact_results_AB,  metric_str="both", pct_eff_flag=T),compute_avg_metric)
-#compute "coverage" -- not sure if that's exactly it, but the frac of time the true TE is in the bounds
-causalimpact_pct_coverage_AB=future_map(causalimpact_bootstrapped_pct_att_AB, compute_tot_coverage)
+tic("Estimating SCDID")
+scdid_AA=future_map(AA_data_no_sel, estimate_scdid_series)
+scdid_tot_AA=future_map(scdid_AA, compute_tot_se_jackknife, stat_in="mean")
+scdid_AA_plots=future_map(scdid_tot_AA,
+                           create_gap_ci_plot,plot_title="scdid Mean ToT by 
+                           Post Treat Period, Jackknife CI", plot_x_lab="Post
+                           Treat Period", plot_y_lab="Mean ToT")
+scdid_AA_metrics_byT=future_map(scdid_AA,compute_avg_metric_per_t,
+                                 metric_str="mae", pct_eff_flag=T)
+scdid_AA_metrics=future_map(scdid_AA,compute_avg_metric,
+                             metric_str="both", pct_eff_flag=T)
 
-
-
-
-
-
-################################################
-#Compute the AA results
-################################################
-Sys.sleep(19)
-tic()
-placebo_data_list=future_map(data_list, create_placebo_df)
+scdid_AA_coverage=future_map(scdid_tot_AA, 
+                              compute_tot_coverage)
 toc()
 
-#GSYNTH IFE PROCESS
-#estimate the series of impacts
-tic()
-gsynth_ife_AA=future_map(placebo_data_list, estimate_gsynth_series, se_est=F)
+
+
+tic("Estimating MC")
+
+mc_AA=future_map(AA_data_no_sel, estimate_gsynth_series, se_est=F,
+                 estimator_type="mc")
+mc_tot_AA=future_map(mc_AA, compute_tot_se_jackknife, stat_in="mean")
+mc_AA_plots=future_map(mc_tot_AA,
+                           create_gap_ci_plot,plot_title="mc Mean ToT by 
+                           Post Treat Period, Jackknife CI", plot_x_lab="Post
+                           Treat Period", plot_y_lab="Mean ToT")
+mc_AA_metrics_byT=future_map(mc_AA,compute_avg_metric_per_t,
+                                 metric_str="mae", pct_eff_flag=T)
+mc_AA_metrics=future_map(mc_AA,compute_avg_metric,
+                             metric_str="both", pct_eff_flag=T)
+
+mc_AA_coverage=future_map(mc_tot_AA, 
+                              compute_tot_coverage)
 toc()
-#get bootstrapped CIs, counterfactual effects
-gsynth_ife_bootstrapped_pct_att_AA=future_map(gsynth_ife_AA,compute_tot_se_jackknife,counterfac_var="counter_factual", stat_in="median" )
-#store gap plots
-gsynth_ife_bootstrapped_pct_att_AA_plots=future_map(gsynth_ife_bootstrapped_pct_att_AA,create_gap_ci_plot,
-                                                          plot_title="Gsynth Mean ToT by Post Treat Period, Jackknife CI", plot_x_lab="Post Treat Period", plot_y_lab="Mean ToT",effect_var="jackknife_median_pct_tot", cf_var="median_pct_cf_tot")
-#compute MSE and MAE bu post period
-gsynth_ife_pct_metric_byT_AA=future_pmap(list(gsynth_ife_AA,  metric_str="both", pct_eff_flag=T),compute_avg_metric_per_t)
-#compute overall MSE, MAE
-gsynth_ife_pct_metric_AA=future_pmap(list(gsynth_ife_AA,  metric_str="both", pct_eff_flag=T),compute_avg_metric)
-#compute "coverage" -- not sure if that's exactly it, but the frac of time the true TE is in the bounds
-gsynth_ife_pct_coverage_AA=future_map(gsynth_ife_bootstrapped_pct_att_AA, compute_tot_coverage)
-
-
-#SCDID PROCESS
-Sys.sleep(19)
-tic()
-scdid_results_AA=future_map(placebo_data_list, estimate_scdid_series,
-                             id_var="entry",time_var="period", (treat_indicator="treatperiod_0"),  (outcome_var="target"),
-                             (counterfac_var="counter_factual"),(pre_SDID = 0), (post_SDID = NULL),
-                             (nn_SDID = NULL),  (scale_SDID = 100),  (period_SDID = 30)) 
-toc()
-
-#get bootstrapped CIs, counterfactual effects
-scdid_bootstrapped_pct_att_AA=future_map(scdid_results_AA,compute_tot_se_jackknife, counterfac_var="counter_factual", stat_in="median")
-#store gap plots
-scdid_bootstrapped_pct_att_AA_plots=future_map(scdid_bootstrapped_pct_att_AA,create_gap_ci_plot,
-                                                     plot_title="SCDID Mean ToT by Post Treat Period, Jackknife CI", plot_x_lab="Post Treat Period", plot_y_lab="Mean ToT", effect_var="jackknife_median_pct_tot")
-#compute MSE and MAE bu post period
-scdid_pct_metric_byT_AA=future_pmap(list(scdid_results_AA,  metric_str="both", pct_eff_flag=T),compute_avg_metric_per_t)
-#compute overall MSE, MAE
-scdid_pct_metric_AA=future_pmap(list(scdid_results_AA,  metric_str="both", pct_eff_flag=T),compute_avg_metric)
-#compute "coverage" -- not sure if that's exactly it, but the frac of time the true TE is in the bounds
-scdid_pct_coverage_AA=future_map(scdid_bootstrapped_pct_att_AA, compute_tot_coverage)
-
-
-#Gsynth IFE EM PROCESS
-# gsynth_ife_EM_AA=future_map(placebo_data_list, estimate_gsynth_series, se_est=F, EM_flag=T)
-# 
-# #get bootstrapped CIs, counterfactual effects
-# gsynth_ife_EM_bootstrapped_pct_att_AA=future_pmap(list(gsynth_ife_EM_AA,counterfac_var="counter_factual" ),compute_tot_se_jackknife)
-# #store gap plots
-# gsynth_ife_EM_bootstrapped_pct_att_AA_plots=future_pmap(list(gsynth_ife_EM_bootstrapped_pct_att_AA,
-#                                                              plot_title="Gsynth EM Mean ToT by Post Treat Period, Jackknife CI", plot_x_lab="Post Treat Period", plot_y_lab="Mean ToT"),create_gap_ci_plot)
-# #compute MSE and MAE bu post period
-# gsynth_ife_EM_pct_metric_byT_AA=future_pmap(list(gsynth_ife_EM_AA, metric_str="both", pct_eff_flag=T),compute_avg_metric_per_t)
-# #compute overall MSE, MAE
-# gsynth_ife_EM_pct_metric_AA=future_pmap(list(gsynth_ife_EM_AA,  metric_str="both", pct_eff_flag=T),compute_avg_metric)
-# #compute "coverage" -- not sure if that's exactly it, but the frac of time the true TE is in the bounds
-# gsynth_ife_EM_pct_coverage_AA=future_map(gsynth_ife_EM_bootstrapped_pct_att_AA, compute_tot_coverage)
-
-
-
-#Gsynth MC PROCESS
-Sys.sleep(19)
-tic()
-gsynth_mc_AA=future_map(placebo_data_list, estimate_gsynth_series, se_est=F, estimator_type="mc")
-toc()
-
-#get bootstrapped CIs, counterfactual effects
-gsynth_mc_bootstrapped_pct_att_AA=future_pmap(list(gsynth_mc_AA,counterfac_var="counter_factual" ),compute_tot_se_jackknife)
-#store gap plots
-gsynth_mc_bootstrapped_pct_att_AA_plots=future_pmap(list(gsynth_mc_bootstrapped_pct_att_AA,
-                                                         plot_title="Gsynth MC Mean ToT by Post Treat Period, Jackknife CI", plot_x_lab="Post Treat Period", plot_y_lab="Mean ToT"),create_gap_ci_plot)
-#compute MSE and MAE bu post period
-gsynth_mc_pct_metric_byT_AA=future_pmap(list(gsynth_mc_AA,  metric_str="both", pct_eff_flag=T),compute_avg_metric_per_t)
-#compute overall MSE, MAE
-gsynth_mc_pct_metric_AA=future_pmap(list(gsynth_mc_AA,  metric_str="both", pct_eff_flag=T),compute_avg_metric)
-#compute "coverage" -- not sure if that's exactly it, but the frac of time the true TE is in the bounds
-gsynth_mc_pct_coverage_AA=future_map(gsynth_mc_bootstrapped_pct_att_AA, compute_tot_coverage)
-
-
-
-
-
-#Causal Impact PRocess
-#Gsynth MC PROCESS
-Sys.sleep(19)
-tic()
-causalimpact_results_AA=future_map((placebo_data_list), estimate_causalimpact_series)
-toc()
-
-#get bootstrapped CIs, counterfactual effects
-causalimpact_bootstrapped_pct_att_AA=future_pmap(list(causalimpact_results_AA,counterfac_var="counter_factual" ),compute_tot_se_jackknife)
-#store gap plots
-causalimpact_bootstrapped_pct_att_AA_plots=future_pmap(list(causalimpact_bootstrapped_pct_att_AA,
-                                                            plot_title="Causal Impact Mean ToT by Post Treat Period, Jackknife CI", plot_x_lab="Post Treat Period", plot_y_lab="Mean ToT"),create_gap_ci_plot)
-#compute MSE and MAE bu post period
-causalimpact_pct_metric_byT_AA=future_pmap(list(causalimpact_results_AA,  metric_str="both", pct_eff_flag=T),compute_avg_metric_per_t)
-#compute overall MSE, MAE
-causalimpact_pct_metric_AA=future_pmap(list(causalimpact_results_AA,  metric_str="both", pct_eff_flag=T),compute_avg_metric)
-#compute "coverage" -- not sure if that's exactly it, but the frac of time the true TE is in the bounds
-causalimpact_pct_coverage_AA=future_map(causalimpact_bootstrapped_pct_att_AA, compute_tot_coverage)
-
-
-
-
-
-
-#Placebo Ensemble Method
-Sys.sleep(19)
-est_placebo_ensemble_weights=future_pmap(list(gsynth_ife_AA, scdid_results_AA, causalimpact_results_AA, gsynth_mc_AA), ensemble_placebo_weights, constrained=F, intercept_allowed=T)
-placebo_ensemble_results=future_pmap(list(gsynth_ife_AB, scdid_results_AB, causalimpact_results_AB, gsynth_mc_AB, est_placebo_ensemble_weights), ensembled_predictor)
-
-#get bootstrapped CIs, counterfactual effects
-placebo_ensemble_bootstrapped_pct_att_AB=future_map(placebo_ensemble_results,
-                                                compute_tot_se_jackknife, counterfac_var="counter_factual")
-#store gap plots
-placebo_ensemble_bootstrapped_pct_att_AB_plots=future_pmap(list(placebo_ensemble_bootstrapped_pct_att_AB,
-                                                                plot_title="Ensemble Mean ToT by Post Treat Period, Jackknife CI", plot_x_lab="Post Treat Period", plot_y_lab="Mean ToT"),create_gap_ci_plot)
-#compute MSE and MAE bu post period
-placebo_ensemble_pct_metric_byT_AB=future_pmap(list(placebo_ensemble_results,  metric_str="both", pct_eff_flag=T),compute_avg_metric_per_t)
-#compute overall MSE, MAE
-placebo_ensemble_pct_metric_AB=future_pmap(list(placebo_ensemble_results,  metric_str="both", pct_eff_flag=T),compute_avg_metric)
-#compute "coverage" -- not sure if that's exactly it, but the frac of time the true TE is in the bounds
-placebo_ensemblee_pct_coverage_AB=future_map(placebo_ensemble_bootstrapped_pct_att_AB, compute_tot_coverage)
-
-
-
-
-plot_tot_bias_per_t(placebo_ensemble_results[[1]], max_post_t = 1, pct_eff_flag = T)
-tsfeature_pc_by_treatment_plot(causalimpact_results_AB[[1]])
-tsfeature_by_treat_df(data_list[[1]])
-
-
-
-
-
-
-
-
-forc_weights=future_pmap(list(gsynth_ife_AA, scdid_results_AA, causalimpact_results_AA, gsynth_mc_AA),auto_forecomb_weights_static)
-forcomb_pred=future_pmap(list(gsynth_ife_AB, scdid_results_AB, causalimpact_results_AB, gsynth_mc_AB, placebo_data_list, forc_weights),
-                         forecomb_predictor_static)
-
-forcomb_bootstrapped_pct_att_AB=future_map(forcomb_pred,
-                                                    compute_tot_se_jackknife, counterfac_var="counter_factual")
-#store gap plots
-forcomb_bootstrapped_pct_att_AB_plots=future_pmap(list(forcomb_bootstrapped_pct_att_AB,
-                                                                plot_title="Ensemble Mean ToT by Post Treat Period, Jackknife CI", plot_x_lab="Post Treat Period", plot_y_lab="Mean ToT"),create_gap_ci_plot)
-#compute MSE and MAE bu post period
-forcomb_pct_metric_byT_AB=future_pmap(list(forcomb_pred,  metric_str="both", pct_eff_flag=T),compute_avg_metric_per_t)
-#compute overall MSE, MAE
-forcomb_pct_metric_AB=future_pmap(list(forcomb_pred,  metric_str="both", pct_eff_flag=T),compute_avg_metric)
-#compute "coverage" -- not sure if that's exactly it, but the frac of time the true TE is in the bounds
-forcomb_pct_coverage_AB=future_map(forcomb_bootstrapped_pct_att_AB, compute_tot_coverage)
-
-
-
-
-

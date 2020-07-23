@@ -5,10 +5,9 @@ library(tsibble)
 library(ggfortify)
 library(gsynth)
 library(augsynth)
-library(tidyverse)
+library(tidyr)
 library(panelView)
 library(synthdid)
-library(resample)
 library(mvtnorm)
 library(janitor)
 library("qpcR")
@@ -193,7 +192,7 @@ estimate_gsynth_series <- function(data_full, id_var = "entry", time_var = "peri
                                    counterfac_var = "counter_factual", se_est = TRUE, num_boots = 1000, inference_type = "parametric",
                                    factor_range = c(0, 5), force_fe = "two-way", cross_val = TRUE,
                                    em_flag = FALSE, estimator_type = "ife",
-                                   parallel_boot = FALSE) {
+                                   parallel_boot = FALSE, normalize_flag=F) {
   # Estimates Gsynth treatment effects given a long form data set, outputting a dataframe
   # consisting of a series of treatments effects for each id_var by time_var in all periods
   
@@ -224,12 +223,13 @@ estimate_gsynth_series <- function(data_full, id_var = "entry", time_var = "peri
   
   
   # Output
-  browser()
+  
+  
   # estimate the panel SCM
   gsynth_agg_te_all_t <- gsynth(
     Y = outcome_var, D = treat_indicator, data = data_full, index = c(id_var, time_var), X = x_in,
     se = se_est, nboots = num_boots, inference = inference_type, r = factor_range, force = force_fe, CV = cross_val,
-    EM = em_flag, estimator = estimator_type, parallel = parallel_boot
+    EM = em_flag, estimator = estimator_type, parallel = parallel_boot, normalize = normalize_flag
   )
   
   
@@ -268,7 +268,7 @@ estimate_gsynth_series <- function(data_full, id_var = "entry", time_var = "peri
   else {
     gsynth_series_output <- (gsynth_agg_te_all_t$Y.tr - gsynth_agg_te_all_t$Y.ct) %>%
       as.data.frame() %>%
-      rownames_to_column(var = time_var) %>%
+      tibble::rownames_to_column(var = time_var) %>%
       pivot_longer(
         -!!as.name(time_var),
         names_to = id_var,
@@ -589,7 +589,7 @@ estimate_scdid_series <- function(data_full,
   
   df_scdid_series <- list_of_scdid_series %>%
     as.data.frame() %>%
-    rownames_to_column(var = time_var) %>%
+    tibble::rownames_to_column(var = time_var) %>%
     mutate(!!as.name(time_var) := as.numeric(!!as.name(time_var))) %>%
     pivot_longer(
       cols = starts_with("X"),

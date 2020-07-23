@@ -6,7 +6,7 @@ library(tsibble)
 library(ggfortify)
 library(gsynth)
 library(augsynth)
-library(tidyverse)
+library(tidyr)
 library(panelView)
 library(synthdid)
 library(resample)
@@ -28,9 +28,8 @@ library(ForecastComb)
 
 
 # print PDF Likely does not work with future_map???
-create_gap_ci_plot <- function(bootstrapped_effects_df, time_var = "post_period_t", effect_var = "jackknife_mean_pct_tot",
-                               upper_ci = "jackknife_ub_pct_tot", lower_ci = "jackknife_lb_pct_tot",
-                               cf_plot = T, cf_var = "mean_pct_cf_tot",
+create_gap_ci_plot <- function(bootstrapped_effects_df, time_var = "post_period_t",
+                               cf_plot = T, pct_flag=T,
                                print_to_pdf = NULL, plot_title = NULL, plot_x_lab = NULL, plot_y_lab = NULL) {
   
   # Computes bootstrap estimates (from resample package) of the treatment effect on the treated, by period
@@ -52,11 +51,34 @@ create_gap_ci_plot <- function(bootstrapped_effects_df, time_var = "post_period_
   # Output
   # gap plot, potentially with counterfactual predictions
   
+  #Automatically get the names of the variables to plot
+  effect_type=ifelse(pct_flag,"pct", "abs")
+  bootstrapped_effects_df=bootstrapped_effects_df %>%
+    dplyr::select(tidyselect::all_of(time_var)) %>%
+    dplyr::bind_cols(
+      bootstrapped_effects_df %>%
+        dplyr::select(tidyselect::matches("tot|bias")) %>%
+        dplyr::select(tidyselect::contains(effect_type))
+    )
+    
+  
+  
+  lower_ci=names(bootstrapped_effects_df %>%
+                     dplyr::select(tidyselect::contains("lb")))
+  upper_ci=names(bootstrapped_effects_df %>%
+                   dplyr::select(tidyselect::contains("ub")))
+  effect_var=setdiff(names(bootstrapped_effects_df %>%
+                             dplyr::select(
+                               tidyselect::matches("jackknife|bootstrap"))), 
+                     c(lower_ci, upper_ci))
+  
   if (!is.null(print_to_pdf)) {
     pdf(print_to_pdf)
   }
-  
+
   if (cf_plot) {
+    cf_var=names(bootstrapped_effects_df %>%
+                   dplyr::select(tidyselect::contains("cf")))
     plot_out <- bootstrapped_effects_df %>%
       ggplot(aes(x = !!as.name(time_var), y = !!as.name(effect_var), color = "Estimate")) +
       geom_line() +

@@ -4,29 +4,79 @@ library(dplyr)
 #TODO(alexdkellogg): allow num_periods directly rather than dates
 #TODO(alexdkellogg): introduce coeff vector and have xBeta go into Y
 factor_synthetic_dgp<-function(num_entries=2000,
-                               num_factors=3,
                                date_start="2017-01-01",
                                first_treat="2018-07-01",
                                date_end="2020-01-01",
                                freq=c("daily", "weekly", "monthly"),
                                prop_treated=0.4,
-                               rho=0.9, #min rho for treated units, max=0.9999
-                               rho_scale=0.2, #sd of truncated normal for rho
-                               rho_shift=0, #shift in the rho mean for control units
-                               cov_overlap_scale=0, #between -1 and 1
-                               loading_scale=0,
-                               intercept_scale=0, #subtracts max runif for control
                                treat_impact_mean=0.1,
                                treat_impact_sd=0.1,
                                treat_decay_mean=0.7,
                                treat_decay_sd=1,
-                               conditional_impact_het=0, #between -1 and 1
                                selection=c("random", "observables", 
                                            "unobservables"),
-                               seed=19){ 
-  #censor_y=5e7
+                               rho=0.9, 
+                               rho_scale=0.2, 
+                               rho_shift=0, 
+                               cov_overlap_scale=0, 
+                               num_factors=3,
+                               loading_scale=0,
+                               intercept_scale=0,
+                               conditional_impact_het=-0,
+                               rescale_y_mean=2.5e4,
+                               seed=19,
+                               log_output=T){ 
+  #rescale_y_max=5e8
+  #=0,
+  
+  #Generates tibble of long form panel data using a factor-augmented AR 1
+  #Each row is time period x unit unique combination.
+  
+  #Args
+  #num_entries: number of units to be generated
+  #date_start: string "yyyy-mm-dd" input for the first simulated date
+  #first_treat: string "yyyy-mm-dd" input first treatment period.
+  #date_end:: string "yyy-mm-dd" input for the last simulated date
+  #freq: string indicating time unit, either "daily", "weekly", "monthly"
+  #prop_treated: proportion of entries that should receive treatment
+  #treat_impact_mean: initial period treatment impact mean, drawn from truncated
+  #   normal distribution centered here. The end points of the dist are [0,0.25]
+  #   by default, but shift to [a,b] where b=mean+0.25 if the mean is larger
+  #   than 0.25 (max of 1)  or a=mean-0.25 if mean is below 0.
+  #treat_impact_sd: standard deviation of the truncated normal mean impact. 
+  #treat_decay_mean: initial period treatment decay mean, drawn from truncated
+  #   normal distribution centered here. The end points of the dist are [0,0.9]
+  #   by default, but shift to [0,1+eps] if mean>0.9. This allows for units to
+  #   have no decay (value of 1). Propagates as mean**(post_treat_period).
+  #treat_impact_sd: standard deviation of the truncated normal decay factor 
+  #selection= string in "random", "observables", "unobservables" dictating 
+  #   treatment assignment mechanism.
+  #rho: mean of truncated normal distribution of the autocorrelation of outcome,
+  #   with bounds [0, 0.995].
+  #rho_scale: standard deviation of truncated normal for the autocorrelation.
+  #rho_shift: multiplier on the mean rho for control units, 
+  #   overall mean stay below 1 (rho*rho_shift<1).
+  #cov_overlap_scale: (-1,1) shifts distribution of covariates for a fraction 
+  #   (prop_treated) of x variables. A value of 1 shifts the distribution for 
+  #   treatment up on all x's, whereas -1 shifts up the distribution for donors.
+  #num_factors: number (3+) of time-varying, unobserved factors to simulate
+  #loading_scale: (-1,1) shift in factor distribution, -1 shifts loadings up
+  #   for control units, positive values shift loadings distribution up for 
+  #   treated units.
+  #intercept_scale: (-1,1) shifts the mean of a truncated normal distribution
+  #   for control unit intercepts: >0 shifts the mean down (treatment is larger)
+  #   and <0 shift control mean above the treatment mean.
+  #conditional_impact_het: constant added to the treatment impact for top 25%
+  #   and subtracted from bottom 25% of counterfactual y at time 1.
+  #log_output: boolean to determine whether output is log scale or exp
+  #seed: random number seed
   
   
+  
+  #Output
+  #Long form tibble with columns for observed, potential treated, and
+  #  potential untreated outcomes, treatment time, and
+  #  the relevant x variables (loadings, intercept, observables).
   
   
   
@@ -102,17 +152,17 @@ factor_synthetic_dgp<-function(num_entries=2000,
   
   #generate the counterfactual outcomes
   synth_data_full=generate_counterfactual(synth_data_full,
-                                          num_periods_inp=num_periods)
-  
+                                          num_periods_inp=num_periods,
+                                          rescale_y=rescale_y_mean)
   
   
   #generate the per period impact (taking acocunt of decay)
-  #TODO(alexdkellogg): add conditional_boost as option, larger TE for big cf
   synth_data_full=generate_treat_impact(data_inp=synth_data_full,
-                                        cond_impact_inp=conditional_impact_het)  %>%
-    dplyr::mutate(y=exp(y),
-                  y0=exp(y0),
-                  y1=exp(y1))
+                                        cond_impact_inp=
+                                          conditional_impact_het) %>%
+    dplyr::mutate(y=exp(y)*(1- log_output)+log_output*y,
+                  y0=exp(y0)*(1- log_output)+log_output*y0,
+                  y1=exp(y1)*(1- log_output)+log_output*y1) 
   
   return(synth_data_full)
   
@@ -165,7 +215,7 @@ compute_outcome_process<-function(data_inp,num_periods_inp){
 }
 
 
-generate_counterfactual<-function(data_inp,num_periods_inp){
+generate_counterfactual<-function(data_inp,num_periods_inp, rescale_y){
   
   outcome_series=data_inp %>%
     dplyr::select(time, entry, intercept, autocorr, 
@@ -177,17 +227,32 @@ generate_counterfactual<-function(data_inp,num_periods_inp){
     dplyr::select(-tidyselect::matches("loading|factor")) %>%
     dplyr::mutate(factor_loadings=computed_factor_vec)
   
-  #TODO(alexdkellogg): add in the covariates
-  # Should this be in the outcome process or just y0=outcome_ar+xB?
   outcome_ar=compute_outcome_process(outcome_series,num_periods_inp)
   
+  xvars=data_inp %>% 
+    dplyr::distinct(entry, .keep_all=T) %>%
+    dplyr::select(tidyselect::matches("obs")) %>%
+    as.matrix() 
+  
+  x_beta=xvars %*% stats::rnorm(n=ncol(xvars), sd=0.5) %>%
+    as.vector()
+  
+  x_betaXwalk=tibble::tibble(entry=seq_len(length(x_beta)),
+                             xbeta=x_beta) 
   outcome_series=outcome_series %>%
+    dplyr::left_join(x_betaXwalk, by="entry") %>%
     dplyr::mutate(factor_loadings=computed_factor_vec,
-                  y0=outcome_ar+intercept+stats::rnorm(dplyr::n(), sd=0.5)) %>%
+                  indiv_component=intercept+xbeta,
+                  y0=outcome_ar+indiv_component+stats::rnorm(dplyr::n(), sd=0.5))
+  
+  outcome_series_rescaled=outcome_series %>%
+    dplyr::mutate(de_sd_y0=(y0/sd(y0)),
+                  rescaled_y=de_sd_y0-(mean(de_sd_y0)-log(rescale_y)),
+                  y0=1.125*rescaled_y) %>%
     dplyr::select(time, entry, factor_loadings, y0)
   
   return(data_inp %>% 
-           dplyr::inner_join(outcome_series, by=c("time", "entry")) %>%
+           dplyr::inner_join(outcome_series_rescaled, by=c("time", "entry")) %>%
            dplyr::select(time, entry, treated, treatment_period,y0,
                          factor_loadings, dplyr::everything())
          )
@@ -195,21 +260,34 @@ generate_counterfactual<-function(data_inp,num_periods_inp){
 
 }
 
-
+#TODO(alexdkellogg): add conditional impact
 generate_treat_impact<-function(data_inp=synth_data_full, 
                                 cond_impact_inp){
+  #determine which observations get a conditional treatment boost
+  condXwalk=data_inp %>%
+    dplyr::filter(time==1) %>%
+    dplyr::select(entry, y0) %>%
+    dplyr::mutate(
+      cond_treat_impact=dplyr::case_when(
+        y0>quantile(y0,0.75)~cond_impact_inp,
+        y0<quantile(y0,0.25)~-cond_impact_inp,
+        TRUE~0 )) %>% 
+    dplyr::select(-y0)
+
+    
   #Define the treatment propogation for each unit and time combo
   data_inp=data_inp %>%
+    dplyr::left_join(condXwalk, by="entry") %>%
     dplyr::group_by(entry) %>%
     dplyr::mutate(
       post_treat_t=time-treatment_period,
       decay_t=dplyr::case_when(
         post_treat_t<0~0,
         post_treat_t>=0~treat_decay**post_treat_t),
-      impact_t=decay_t*(treat_impact+cond_impact_inp),
+      impact_t=decay_t*(treat_impact+cond_treat_impact),
       ) %>%
     dplyr::ungroup() %>%
-    dplyr::select(-c(treat_decay, treat_decay, decay_t)) 
+    dplyr::select(-c(treat_decay, treat_decay, decay_t, cond_treat_impact)) 
   
   #Add the treatment impact to create y1
   return(data_inp %>% 
@@ -399,7 +477,7 @@ unit_level_simulation <- function(n_inp,
     dplyr::mutate(
       treat_impact=truncnorm::rtruncnorm(n=dplyr::n(), a=impact_lb,b=impact_ub, 
                                          mean=impact_mean_inp, sd=impact_sd_inp),
-      treat_decay=truncnorm::rtruncnorm(n=dplyr::n(), a=0,b=0.9, 
+      treat_decay=truncnorm::rtruncnorm(n=dplyr::n(), a=0,b=decay_ub, 
                                         mean=decay_mean_inp, sd=decay_sd_inp))
   
   return(unit_level_tib)
@@ -511,7 +589,7 @@ assign_treat<-function( n_inp, type_inp, cov_overlap_inp,
   }
 }
 
-#TODO(alexdkellogg): Do we want to adjust outcomes by autocorr (case_when)?
+
 generate_loadings <- function(treat_tib_inp, loading_scale_inp,num_factors_inp,
                               int_scale_inp,rho_inp, rho_scale_inp, rho_shift_inp){
   
@@ -519,21 +597,12 @@ generate_loadings <- function(treat_tib_inp, loading_scale_inp,num_factors_inp,
   colnames(loadings_mat)=glue::glue("loading{1:num_factors_inp}")
   
   
-  
-  mean_int=case_when(rho_inp<0.5~9,
-                    rho_inp<0.8~7.5,
-                    rho_inp<0.9~6.5,
-                    TRUE~5.5)
-  
-  stopifnot(mean_int-int_scale_inp>5,
-            mean_int-int_scale_inp<10)
-  
   tib_pre_loadings=treat_tib_inp %>% 
     dplyr::group_by(treated) %>%
     dplyr::mutate(
       #intercept=stats::rexp(dplyr::n(), 1+(1-treated)*int_scale_inp),
       intercept=truncnorm::rtruncnorm(n=dplyr::n(), a=5,b=10,
-                                      mean=mean_int-(1-treated)*int_scale_inp,
+                                      mean=7.5-(1-treated)*int_scale_inp,
                                       sd=0.7),
       #intercept=stats::runif(dplyr::n(), min=5,max=8-(1-treated)*int_scale_inp),
       # autocorr=stats::runif(dplyr::n(),ifelse(treated,rho_inp,
@@ -626,4 +695,20 @@ assign_treat_time<-function(treat_tib_inp, treat_start, num_periods_inp){
 
 
 
+format_for_est<-function(data_ouput){
+  #For estimation, we want a dummy for the treated units in treated times
+  reformatted_data=data_ouput %>%
+    dplyr::mutate(treatperiod_0=(treated==1)*(post_treat_t >=0) ) %>%
+    dplyr::rename(potential_post_t=post_treat_t,
+                  potential_treatment_period=treatment_period,
+                  potential_impact_t=impact_t,
+                  target=y,
+                  counter_factual=y0,
+                  period=time) %>%
+    dplyr::select(period, entry, treated, treatperiod_0 , target,
+                  counter_factual)
+  
+  return(reformatted_data)
+  
+}
 
