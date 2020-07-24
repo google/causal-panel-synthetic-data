@@ -429,8 +429,9 @@ nsdid_prediction <- function(y_df,
                              nnsize = NULL, 
                              scale = 100, 
                              period = 52) {
-  y <- y_df[, 1]
+  
   treatperiod <- y_df[1, 2]
+  y <- y_df[1:(treatperiod-1), 1]
   
   y_con <- ct_mat / scale
   nc <- ncol(y_con)
@@ -578,6 +579,7 @@ estimate_scdid_series <- function(data_full,
   list_inputs <- Map(cbind, list_of_treat_data, list_of_treat_times)
   toc()
   
+
   tic("Mapping to SCDID fun")
   list_of_scdid_series <- furrr::future_map(list_inputs, nsdid_prediction, control_matrix, pre_sdid, post_sdid, nn_sdid, scale_sdid, period_sdid)
   toc()
