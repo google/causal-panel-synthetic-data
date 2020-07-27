@@ -1,8 +1,7 @@
-library(dplyr)
-
+pacman::p_load(dplyr, furrr, tibble, tidyr, stats, lubridate,
+               glue, truncnorm,MASS)
 #TODO(alexdkellogg): allow dgp to be covariates only or factors only
 #TODO(alexdkellogg): allow num_periods directly rather than dates
-#TODO(alexdkellogg): introduce coeff vector and have xBeta go into Y
 factor_synthetic_dgp<-function(num_entries=2000,
                                date_start="2017-01-01",
                                first_treat="2018-07-01",
@@ -24,8 +23,7 @@ factor_synthetic_dgp<-function(num_entries=2000,
                                intercept_scale=0,
                                conditional_impact_het=-0,
                                rescale_y_mean=2.5e4,
-                               seed=19,
-                               log_output=T){ 
+                               seed=19){ 
   #rescale_y_max=5e8
   #=0,
   
@@ -159,15 +157,21 @@ factor_synthetic_dgp<-function(num_entries=2000,
   #generate the per period impact (taking acocunt of decay)
   synth_data_full=generate_treat_impact(data_inp=synth_data_full,
                                         cond_impact_inp=
-                                          conditional_impact_het) %>%
-    dplyr::mutate(y=exp(y)*(1- log_output)+log_output*y,
-                  y0=exp(y0)*(1- log_output)+log_output*y0,
-                  y1=exp(y1)*(1- log_output)+log_output*y1) 
+                                          conditional_impact_het) 
   
   return(synth_data_full)
   
   
   
+}
+
+noisify_draw<-function(data_inp, seed,log_output=T, sig_y=1){
+  set.seed(seed)
+  eps=stats::rnorm(nrow(data_inp), sd=sig_y)
+  data_inp %>%
+    dplyr::mutate(y=exp(y+eps)*(1- log_output)+log_output*(y+eps),
+                  y0=exp(y0+eps)*(1- log_output)+log_output*(y0+eps),
+                  y1=exp(y1+eps)*(1- log_output)+log_output*(y1+eps)) 
 }
 
 
@@ -188,6 +192,8 @@ compute_factor_loadings <- function(data_inp){
                                          .f=~(.y)%*%t(.x) ) %>%
     unlist())
 }
+
+
 
 #TODO(alexdkellogg): check with AP about 0 noise AR for y
 compute_outcome_process<-function(data_inp,num_periods_inp){
@@ -243,7 +249,7 @@ generate_counterfactual<-function(data_inp,num_periods_inp, rescale_y){
     dplyr::left_join(x_betaXwalk, by="entry") %>%
     dplyr::mutate(factor_loadings=computed_factor_vec,
                   indiv_component=intercept+xbeta,
-                  y0=outcome_ar+indiv_component+stats::rnorm(dplyr::n(), sd=0.5))
+                  y0=outcome_ar+indiv_component)
   
   outcome_series_rescaled=outcome_series %>%
     dplyr::mutate(de_sd_y0=(y0/sd(y0)),
@@ -260,7 +266,6 @@ generate_counterfactual<-function(data_inp,num_periods_inp, rescale_y){
 
 }
 
-#TODO(alexdkellogg): add conditional impact
 generate_treat_impact<-function(data_inp=synth_data_full, 
                                 cond_impact_inp){
   #determine which observations get a conditional treatment boost
@@ -334,10 +339,6 @@ generate_time_grid <- function(date_start_inp,num_periods_inp,
 }
 
 
-#plan: factors are Txnum_fac dimensional, and must be multiplied by loadings
-#can group by treated and call generate factors with varying rho using
-#rho_het_inp, which multiplies rho for the counterfactuals
-
 generate_factors<-function(num_factors_inp, 
                            num_periods_inp, num_entry_inp,
                            date_start_inp, date_end_inp, freq_inp){
@@ -388,7 +389,7 @@ generate_factors<-function(num_factors_inp,
       names(factor_tib %>% dplyr::select(tidyselect::contains("factor"))),
       c(glue::glue("factor{1:3}"))
       )
-    extra_factor_tib=purrr::map(.x=extra_factors_names,
+    extra_factor_tib=furrr::future_map(.x=extra_factors_names,
                                        .f=~add_extra_factors(factor_tib=factor_tib,
                                  num_factors_inp=num_factors_inp,
                                  num_periods_inp=num_periods_inp,
@@ -434,8 +435,7 @@ add_extra_factors<-function(factor_tib,col_in,num_factors_inp,
 }
 
 
-#will need to add individual specific loadings here
-#with heterogeneity given by loading_scale
+
 unit_level_simulation <- function(n_inp,
                                   type_inp, 
                                   cov_overlap_inp,
@@ -521,8 +521,7 @@ time_interval_calculator <- function(start_t, end_t, freq_t){
 
 
 
-#TODO(alexdkellogg): discuss with AP difference between 
-#   overlap and selection (do we need both?)
+
 assign_treat<-function( n_inp, type_inp, cov_overlap_inp,
                         loading_scale_inp,rho_inp=rho_inp, 
                         rho_scale_inp,rho_shift_inp, num_factors_inp,

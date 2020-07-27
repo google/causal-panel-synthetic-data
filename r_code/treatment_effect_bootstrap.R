@@ -1,27 +1,4 @@
-library(CausalImpact)
-library(Matrix)
-library(tsfeatures)
-library(tsibble)
-library(ggfortify)
-library(gsynth)
-library(augsynth)
-library(tidyr)
-library(panelView)
-library(synthdid)
-library(resample)
-library(mvtnorm)
-library(janitor)
-library("qpcR")
-library(dplyr)
-library(furrr)
-library(gridExtra)
-library(quadprog)
-library(rstatix)
-library(ForecastComb)
-
-source(here("r_code/analysis_metrics.R"))
-
-
+pacman::p_load(dplyr, furrr, stringr, tidyr, tibble)
 compute_cf_tot <- function(tib_inp, stat_in_inp,t_var_inp,
                            treat_t_inp, outcome_inp, cf_inp){
   #Helper function to our bootstrap and jackknife procedures, used to compute
@@ -146,7 +123,7 @@ compute_tot_se_jackknife <- function(estimated_series_df, time_var = "period", t
     dplyr::inner_join(jk_comp_ci, by="post_period_t")
   #Add counterfactual if relevant
   if(compute_cf_eff){
-    jk_ci_byT %>% dplyr::inner_join(cf_tot_df,by = "post_period_t")
+    jk_ci_byT=jk_ci_byT %>% dplyr::left_join(cf_tot_df,by = "post_period_t")
   }
   return(jk_ci_byT)
 }
@@ -239,54 +216,42 @@ compute_ci_bounds_bootstrap <- function(estimated_series_df, time_var = "period"
     dplyr::inner_join(boot_comp_ci, by="post_period_t")
   #Add counterfactual if relevant
   if(compute_cf_eff){
-    boot_ci_byT %>% dplyr::inner_join(cf_tot_df,by = "post_period_t")
+    boot_ci_byT=boot_ci_byT %>% dplyr::inner_join(cf_tot_df,by = "post_period_t")
   }
   return(boot_ci_byT)
 }
   
 
-
-
-compute_jackknife_bias<-function(tot_list, alpha_ci = 0.95){
-  tot_tib=tot_list %>% dplyr::bind_rows()
-
-  effect_var_abs<-names(tot_tib %>%
-                          dplyr::select(tidyselect::matches("observed.*abs")))
-  effect_var_pct<-names(tot_tib %>%
-                          dplyr::select(tidyselect::matches("observed.*pct")))
-
-  cfvar_pct<-names(tot_tib %>% dplyr::select(tidyselect::contains("pct_cf")))
+format_jackknife<-function(jk_est, ci_in, col_name){
+  #Helper function to compute the confidence bands for the jackknife
+  #Also reformats the output for convenient printing
   
-  cfvar_abs<-setdiff(names(tot_tib %>%
-                             dplyr::select(tidyselect::contains("cf"))),
-                     cfvar_pct)
+  #Args
   
-  jk_comp_abs <- tot_tib %>%
-    dplyr::mutate(bias=!!as.name(effect_var_abs)-!!as.name(cfvar_abs)) %>%
-    split(.[["post_period_t"]]) %>%
-    furrr::future_map(~ .[["bias"]]) %>%
-    furrr::future_map(~ jackknife(., mean))
   
-  #Weighted average, but no variation per group...
-  # dplyr::group_by(post_period_t) %>%
-  #   dplyr::mutate(weighted_avg = sum(treated_n*!!as.name(effect_var_abs))/sum(treated_n) )%>%
-
-  jk_comp_pct <- tot_tib %>%
-    dplyr::mutate(bias=!!as.name(effect_var_pct)-!!as.name(cfvar_pct)) %>%
-    split(.[["post_period_t"]]) %>%
-    furrr::future_map(~ .[["bias"]]) %>%
-    furrr::future_map(~ jackknife(., mean))
-
-  #Gather the bounds on the confidence intervals and format as tibble
-  jk_comp_ci <-format_jackknife(
-    jk_est=jk_comp_abs,ci_in=alpha_ci,col_name= 
-      paste(stat_in,"_abs_bias", sep="")) %>%
-    dplyr::inner_join(
-      format_jackknife(jk_est=jk_comp_pct,ci_in=alpha_ci, col_name= 
-                         paste(stat_in,"_pct_bias",sep="")), 
-      by="post_period_t") %>%
-    dplyr::select(post_period_t, dplyr::everything()) %>%
-    dplyr::mutate(cf_bias_pct=0, cf_bias_abs=0)
-
-  return(jk_comp_ci)
+  statname<- paste("jackknife_", col_name, sep = "")
+  obs_statname <- paste("observed_", col_name, sep = "")
+  
+  jk_est_ci<- 
+    furrr::future_pmap(list(jk_est,
+                            list(probs = 
+                                   c(0.5 - ci_in / 2,0.5 + ci_in / 2))),
+                       CI.t) %>%
+    do.call(rbind, .) %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(post_period_t = seq_len(nrow(.))-1,
+                  !!as.name(statname) := jk_est %>% 
+                    furrr::future_map(~ .[["stats"]]) %>% 
+                    furrr::future_map(~ .[["Mean"]]) %>%
+                    unlist(),
+                  !!as.name(obs_statname) := jk_est %>% 
+                    furrr::future_map(~ .[["stats"]]) %>% 
+                    furrr::future_map(~ .[["Observed"]]) %>%
+                    unlist()
+    )
+  
+  names(jk_est_ci)[1:2] <- c(paste("jackknife_lb_",col_name, sep=""),
+                             paste("jackknife_ub_", col_name, sep = ""))
+  
+  return(jk_est_ci)
 }

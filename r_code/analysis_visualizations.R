@@ -1,24 +1,4 @@
-
-library(CausalImpact)
-library(Matrix)
-library(tsfeatures)
-library(tsibble)
-library(ggfortify)
-library(gsynth)
-library(augsynth)
-library(tidyr)
-library(panelView)
-library(synthdid)
-library(resample)
-library(mvtnorm)
-library(janitor)
-library("qpcR")
-library(dplyr)
-library(furrr)
-library(gridExtra)
-library(quadprog)
-library(rstatix)
-library(ForecastComb)
+pacman::p_load(dplyr, ggplot2)
 
 
 #################################################################
@@ -80,16 +60,16 @@ create_gap_ci_plot <- function(bootstrapped_effects_df, time_var = "post_period_
     cf_var=names(bootstrapped_effects_df %>%
                    dplyr::select(tidyselect::contains("cf")))
     plot_out <- bootstrapped_effects_df %>%
-      ggplot(aes(x = !!as.name(time_var), y = !!as.name(effect_var), color = "Estimate")) +
-      geom_line() +
-      geom_ribbon(aes(ymin = !!as.name(lower_ci), ymax = !!as.name(upper_ci)), alpha = 0.3, color = NA) +
-      geom_line(aes(y = !!as.name(cf_var), color = "True")) +
-      ggtitle(ifelse(is.null(plot_title), paste("Gap Plot of", effect_var), plot_title)) +
-      labs(
+      ggplot2::ggplot(aes(x = !!as.name(time_var), y = !!as.name(effect_var), color = "Estimate")) +
+      ggplot2::geom_line() +
+      ggplot2::geom_ribbon(aes(ymin = !!as.name(lower_ci), ymax = !!as.name(upper_ci)), alpha = 0.3, color = NA) +
+      ggplot2::geom_line(aes(y = !!as.name(cf_var), color = "True")) +
+      ggplot2::ggtitle(ifelse(is.null(plot_title), paste("Gap Plot of", effect_var), plot_title)) +
+      ggplot2::labs(
         x = ifelse(is.null(plot_x_lab), time_var, plot_x_lab),
         y = ifelse(is.null(plot_y_lab), effect_var, plot_y_lab)
       ) +
-      scale_colour_manual(
+      ggplot2::scale_colour_manual(
         name = "",
         values = c("Estimate" = "black", "True" = "red"), labels = c("Estimate", "True")
       )
@@ -97,11 +77,11 @@ create_gap_ci_plot <- function(bootstrapped_effects_df, time_var = "post_period_
   
   if (!cf_plot) {
     plot_out <- bootstrapped_effects_df %>%
-      ggplot(aes(x = !!as.name(time_var), y = !!as.name(effect_var))) +
-      geom_line() +
-      geom_ribbon(aes(ymin = !!as.name(lower_ci), ymax = !!as.name(upper_ci)), alpha = 0.3) +
-      ggtitle(ifelse(is.null(plot_title), paste("Gap Plot of", effect_var), plot_title)) +
-      labs(
+      ggplot2::ggplot(aes(x = !!as.name(time_var), y = !!as.name(effect_var))) +
+      ggplot2::geom_line() +
+      ggplot2::geom_ribbon(aes(ymin = !!as.name(lower_ci), ymax = !!as.name(upper_ci)), alpha = 0.3) +
+      ggplot2::ggtitle(ifelse(is.null(plot_title), paste("Gap Plot of", effect_var), plot_title)) +
+      ggplot2::labs(
         x = ifelse(is.null(plot_x_lab), time_var, plot_x_lab),
         y = ifelse(is.null(plot_y_lab), effect_var, plot_y_lab)
       )
@@ -118,6 +98,11 @@ create_gap_ci_plot <- function(bootstrapped_effects_df, time_var = "post_period_
 
 
 
+
+
+
+
+#TODO(alexdkellogg): not sure if we need this anymore
 plot_tot_bias_per_t <- function(estimated_series_df, time_var = "period", id_var = "entry", outcome_var = "response", prediction_var = "point.pred",
                                 counterfac_var = "counter_factual", treat_period_var = "Treatment_Period",
                                 max_post_t = 12, pct_eff_flag = F, plot_title = NULL) {
@@ -148,16 +133,16 @@ plot_tot_bias_per_t <- function(estimated_series_df, time_var = "period", id_var
       filter(post_period_t >= 0, post_period_t <= max_post_t) %>%
       group_by(!!as.name(id_var)) %>%
       summarise(bias_per_id = mean(!!as.name(prediction_var) - !!as.name(counterfac_var))) %>%
-      ggplot(aes(x = bias_per_id)) +
-      geom_density(fill = "blue", alpha = 0.4) +
+      ggplot2::ggplot(aes(x = bias_per_id)) +
+      ggplot2::geom_density(fill = "blue", alpha = 0.4) +
       theme_bw() +
       theme(
         panel.border = element_blank(), panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")
       ) +
-      geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+      ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
       scale_x_continuous(name = "ATT by ID") +
-      ggtitle(ifelse(is.null(plot_title), paste("ToT Bias by Unit, averaged over", max_post_t, "post-treat Periods"), plot_title))
+      ggplot2::ggtitle(ifelse(is.null(plot_title), paste("ToT Bias by Unit, averaged over", max_post_t, "post-treat Periods"), plot_title))
   }
   
   # percent error computation
@@ -167,16 +152,16 @@ plot_tot_bias_per_t <- function(estimated_series_df, time_var = "period", id_var
       filter(post_period_t >= 0) %>%
       group_by(!!as.name(id_var)) %>%
       summarise(bias_per_id = mean(!!as.name(outcome_var) / !!as.name(counterfac_var) - (!!as.name(outcome_var) / !!as.name(prediction_var)))) %>%
-      ggplot(aes(x = bias_per_id)) +
-      geom_density(fill = "blue", alpha = 0.4) +
+      ggplot2::ggplot(aes(x = bias_per_id)) +
+      ggplot2::geom_density(fill = "blue", alpha = 0.4) +
       theme_bw() +
       theme(
         panel.border = element_blank(), panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")
       ) +
-      geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+      ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
       scale_x_continuous(name = "ATT by ID") +
-      ggtitle(ifelse(is.null(plot_title), paste("ToT Pct Bias by Unit, averaged over", max_post_t, "post-treat Periods"), plot_title))
+      ggplot2::ggtitle(ifelse(is.null(plot_title), paste("ToT Pct Bias by Unit, averaged over", max_post_t, "post-treat Periods"), plot_title))
   }
   
   

@@ -1,23 +1,6 @@
-library(CausalImpact)
-library(Matrix)
-library(tsfeatures)
-library(tsibble)
-library(ggfortify)
-library(gsynth)
-library(augsynth)
-library(tidyr)
-library(panelView)
-library(synthdid)
-library(mvtnorm)
-library(janitor)
-library("qpcR")
-library(dplyr)
-library(furrr)
-library(gridExtra)
-library(quadprog)
-library(rstatix)
-library(ForecastComb)
-library(tictoc)
+pacman::p_load(dplyr, tibble, CausalImpact,gsynth,tidyr,Matrix, quadprog,
+               janitor, stats)
+
 
 ############################################
 # Functions for estimating Treatment Effects
@@ -33,7 +16,7 @@ causalimpact_helper <- function(treat_data,
                                 control_data,
                                 pre_range,
                                 post_range) {
-  return(CausalImpact(
+  return(CausalImpact::CausalImpact(
     cbind(treat_data,
           control_data,
           deparse.level = 0
@@ -72,15 +55,15 @@ estimate_causalimpact_series <- function(data_full,
   
   # Split the dataset based on whether they are ever treated
   tr_entries <- data_full %>%
-    filter(!!as.name(treat_indicator) > 0) %>%
-    distinct(!!as.name(id_var)) %>%
-    pull() %>%
+    dplyr::filter(!!as.name(treat_indicator) > 0) %>%
+    dplyr::distinct(!!as.name(id_var)) %>%
+    dplyr::pull() %>%
     sort()
   ct_entries <- setdiff(data_full %>%
-                          distinct(!!as.name(id_var)) %>%
-                          pull(), tr_entries)
+                          dplyr::distinct(!!as.name(id_var)) %>%
+                          dplyr::pull(), tr_entries)
   # Create a dataframe of the subset of control units
-  cd <- data_full %>% filter(!!as.name(id_var) %in% ct_entries)
+  cd <- data_full %>% dplyr::filter(!!as.name(id_var) %in% ct_entries)
   cd <- merge(cd, data.frame(entry = ct_entries, rank = seq_along(ct_entries)))
   
   
@@ -88,7 +71,7 @@ estimate_causalimpact_series <- function(data_full,
   # construct control data matrix
   # For all the control data: Row of matrix (index i) indicates the time, Column (j) indicates observation
   # matrix entry represents the Target
-  donor_outcome_matrix <- as.matrix(sparseMatrix(x = cd[[outcome_var]],
+  donor_outcome_matrix <- as.matrix(Matrix::sparseMatrix(x = cd[[outcome_var]],
                                                  i = cd[[time_var]],
                                                  j = cd$rank))
   
@@ -97,8 +80,8 @@ estimate_causalimpact_series <- function(data_full,
   # To output Parallelized process, we gather the inputs as a series of lists
   # first, we want the full treated dataframe to manipulate
   td_all <- data_full %>%
-    filter(!!as.name(id_var) %in% tr_entries) %>%
-    arrange(!!as.name(time_var), !!as.name(id_var)) # NEW, MIGHT CAUSE ERROR
+    dplyr::filter(!!as.name(id_var) %in% tr_entries) %>%
+    dplyr::arrange(!!as.name(time_var), !!as.name(id_var)) # NEW, MIGHT CAUSE ERROR
   
   # Parallelized computation of the data matrix, by id_var, required for causal impact
   # specifically,  append treated data as the first column in the
@@ -149,29 +132,29 @@ estimate_causalimpact_series <- function(data_full,
     do.call(bind_rows, .) %>%
     dplyr::select(c(response, point.pred, point.effect, point.effect.lower, point.effect.upper)) %>%
     cbind(., period_entry_rowlabs_df, deparse.level = 0) %>%
-    inner_join(td_all %>%
-                 group_by(!!as.name(id_var)) %>%
-                 mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
-                 ungroup() %>%
+    dplyr::inner_join(td_all %>%
+                 dplyr::group_by(!!as.name(id_var)) %>%
+                 dplyr::mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
+                 dplyr::ungroup() %>%
                  dplyr::select(id_var, time_var, Treatment_Period), by = c(id_var, time_var)) %>%
-    arrange(!!as.name(time_var), !!as.name(id_var))
+    dplyr::arrange(!!as.name(time_var), !!as.name(id_var))
   
   
   if (!is.null(counterfac_var)) {
     causalimpact_series_output <- causalimpact_series_output %>%
-      inner_join(
+      dplyr::inner_join(
         td_all %>%
           dplyr::select(id_var, time_var, counterfac_var),
         by = c(id_var, time_var)
       ) %>%
-      mutate(
+      dplyr::mutate(
         cf_point.effect = (response - !!as.name(counterfac_var)),
         cf_pct.effect = (response / !!as.name(counterfac_var)) - 1
       )
   }
   
   # add a column with relative (pct) effect
-  causalimpact_series_output <- causalimpact_series_output %>% mutate(
+  causalimpact_series_output <- causalimpact_series_output %>% dplyr::mutate(
     pct.effect = (response / point.pred) - 1
   )
   
@@ -224,9 +207,8 @@ estimate_gsynth_series <- function(data_full, id_var = "entry", time_var = "peri
   
   # Output
   
-  
   # estimate the panel SCM
-  gsynth_agg_te_all_t <- gsynth(
+  gsynth_agg_te_all_t <- gsynth::gsynth(
     Y = outcome_var, D = treat_indicator, data = data_full, index = c(id_var, time_var), X = x_in,
     se = se_est, nboots = num_boots, inference = inference_type, r = factor_range, force = force_fe, CV = cross_val,
     EM = em_flag, estimator = estimator_type, parallel = parallel_boot, normalize = normalize_flag
@@ -238,11 +220,11 @@ estimate_gsynth_series <- function(data_full, id_var = "entry", time_var = "peri
     # gets all indiv effects for all T
     # renames the multi-d array output so that we can more easily pivot it
     gsynth_indiv_te_series <- gsynth_agg_te_all_t$est.ind[, , 1:(gsynth_agg_te_all_t$Ntr)] %>%
-      as.data.frame() %>%
-      mutate(!!as.name(time_var) := seq_len(nrow(.))) %>%
-      clean_names() %>%
-      setNames(ifelse(str_count(names(.), "_") > 1,
-                      str_replace(names(.), "[_]", ""),
+      tibble::as_tibble() %>%
+      dplyr::mutate(!!as.name(time_var) := seq_len(nrow(.))) %>%
+      janitor::clean_names() %>%
+      stats::setNames(ifelse(stringr::str_count(names(.), "_") > 1,
+                      stringr::str_replace(names(.), "[_]", ""),
                       names(.)))
     
     
@@ -250,59 +232,59 @@ estimate_gsynth_series <- function(data_full, id_var = "entry", time_var = "peri
     # where each period-entry combination has a column for effect, CI.
     # Then, for each period, summarize over all the entries
     gsynth_series_output <- gsynth_indiv_te_series %>%
-      pivot_longer(
+      tidyr::pivot_longer(
         -!!as.name(time_var),
         names_to = c(".value", id_var),
         names_sep = "_"
       ) %>%
-      mutate(!!as.name(id_var) := as.numeric(!!as.name(id_var))) %>% 
-      inner_join(data_full %>%
-                   group_by(!!as.name(id_var)) %>% 
-                   mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
-                   ungroup() %>%
-                   filter(!is.na(Treatment_Period)) %>%
+      dplyr::mutate(!!as.name(id_var) := as.numeric(!!as.name(id_var))) %>% 
+      dplyr::inner_join(data_full %>%
+                   dplyr::group_by(!!as.name(id_var)) %>% 
+                   dplyr::mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
+                   dplyr::ungroup() %>%
+                   dplyr::filter(!is.na(Treatment_Period)) %>%
                    dplyr::select(id_var, time_var, outcome_var, Treatment_Period), by = c(id_var, time_var)) %>%
-      rename(response = outcome_var, point.effect = eff) %>%
-      mutate(point.pred = response - point.effect)
+      dplyr::rename(response = outcome_var, point.effect = eff) %>%
+      dplyr::mutate(point.pred = response - point.effect)
   }
   else {
     gsynth_series_output <- (gsynth_agg_te_all_t$Y.tr - gsynth_agg_te_all_t$Y.ct) %>%
-      as.data.frame() %>%
+      tibble::as_tibble() %>%
       tibble::rownames_to_column(var = time_var) %>%
-      pivot_longer(
+      tidyr::pivot_longer(
         -!!as.name(time_var),
         names_to = id_var,
         values_to = "point.effect"
       ) %>%
-      mutate(
+      dplyr::mutate(
         !!as.name(id_var) := as.numeric(!!as.name(id_var)),
         !!as.name(time_var) := as.numeric(!!as.name(time_var))
       ) %>%
-      inner_join(data_full %>%
-                   group_by(!!as.name(id_var)) %>% 
-                   mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
-                   ungroup() %>%
-                   filter(!is.na(Treatment_Period)) %>%
+      dplyr::inner_join(data_full %>%
+                   dplyr::group_by(!!as.name(id_var)) %>% 
+                   dplyr::mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
+                   dplyr::ungroup() %>%
+                   dplyr::filter(!is.na(Treatment_Period)) %>%
                    dplyr::select(id_var, time_var, outcome_var, Treatment_Period), by = c(id_var, time_var)) %>%
-      rename(response = outcome_var) %>%
-      mutate(point.pred = response - point.effect)
+      dplyr::rename(response = outcome_var) %>%
+      dplyr::mutate(point.pred = response - point.effect)
   }
   
   if (!is.null(counterfac_var)) {
     gsynth_series_output <- gsynth_series_output %>%
-      inner_join(
+      dplyr::inner_join(
         data_full %>%
           dplyr::select(id_var, time_var, counterfac_var),
         by = c(id_var, time_var)
       ) %>%
-      mutate(
+      dplyr::mutate(
         cf_point.effect = (response - !!as.name(counterfac_var)),
         cf_pct.effect = (response / !!as.name(counterfac_var)) - 1
       )
   }
   
   # add a column with relative (pct) effect
-  gsynth_series_output <- gsynth_series_output %>% mutate(
+  gsynth_series_output <- gsynth_series_output %>% dplyr::mutate(
     pct.effect = (response / point.pred) - 1
   )
   
@@ -347,7 +329,7 @@ synthetic_control_weight <- function(m_mat, target, zeta = 1) {
     cbind(diag(1, ncol(m_mat)), matrix(0, ncol(m_mat), nrow(m_mat)))
   )
   bvec <- c(target, 1, rep(0, ncol(m_mat)))
-  soln <- solve.QP(d_mat, dvec, t(a_t), bvec, meq = meq)
+  soln <- quadprog::solve.QP(d_mat, dvec, t(a_t), bvec, meq = meq)
   gamma <- soln$solution[seq_len(ncol(m_mat))]
   
   return(gamma)
@@ -515,18 +497,18 @@ estimate_scdid_series <- function(data_full,
   tic("Identified Treat and Control Data")
   # Split the dataset based on whether they are ever treated
   tr_entries <- data_full %>%
-    filter(!!as.name(treat_indicator) > 0) %>%
-    distinct(!!as.name(id_var)) %>%
-    pull() %>%
+    dplyr::filter(!!as.name(treat_indicator) > 0) %>%
+    dplyr::distinct(!!as.name(id_var)) %>%
+    dplyr::pull() %>%
     sort()
-  ct_entries <- setdiff(data_full %>% distinct(!!as.name(id_var)) %>% pull(), tr_entries)
+  ct_entries <- setdiff(data_full %>% dplyr::distinct(!!as.name(id_var)) %>% dplyr::pull(), tr_entries)
   
   
   # create control data frame, with a new id for the sake of ordering observations later
-  control_data <- data_full %>% filter(!!as.name(id_var) %in% ct_entries)
+  control_data <- data_full %>% dplyr::filter(!!as.name(id_var) %in% ct_entries)
   # n0, number of control entries, is just the number of unique entries in cd
   n0 <- control_data %>%
-    distinct(!!as.name(id_var)) %>%
+    dplyr::distinct(!!as.name(id_var)) %>%
     nrow()
   
   
@@ -534,17 +516,17 @@ estimate_scdid_series <- function(data_full,
   # Because SCDID cannot handle staggered adoption, introduce one treated unit at a time
   # THIS GOES WITHIN Causal Impact For Loop
   treat_data <- data_full %>%
-    filter(!!as.name(id_var) %in% tr_entries) %>%
-    mutate(new_id = group_indices(., c(!!as.name(id_var))) + n0) %>%
-    arrange(!!as.name(time_var), new_id) %>%
-    group_by(new_id) %>%
-    mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
-    ungroup()
+    dplyr::filter(!!as.name(id_var) %in% tr_entries) %>%
+    dplyr::mutate(new_id = dplyr::group_indices(., c(!!as.name(id_var))) + n0) %>%
+    dplyr::arrange(!!as.name(time_var), new_id) %>%
+    dplyr::group_by(new_id) %>%
+    dplyr::mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
+    dplyr::ungroup()
   
   toc()
   
   # create the control matrix once, which is an input to sdid estimator
-  control_matrix <- spread(
+  control_matrix <- tidyr::spread(
     control_data %>% dplyr::select(!!as.name(time_var), !!as.name(id_var), !!as.name(outcome_var)),
     !!as.name(time_var), !!as.name(outcome_var)
   ) %>%
@@ -562,7 +544,7 @@ estimate_scdid_series <- function(data_full,
     lapply(., function(x) {
       x %>%
         dplyr::select(Treatment_Period) %>%
-        first()
+        dplyr::first()
     })
   toc()
   
@@ -590,40 +572,40 @@ estimate_scdid_series <- function(data_full,
   # each row represents a period-unit combination, with the outcome_var, the prediction, the effect (and the treatment time/indicator)
   
   df_scdid_series <- list_of_scdid_series %>%
-    as.data.frame() %>%
+    tibble::as_tibble() %>%
     tibble::rownames_to_column(var = time_var) %>%
-    mutate(!!as.name(time_var) := as.numeric(!!as.name(time_var))) %>%
-    pivot_longer(
+    dplyr::mutate(!!as.name(time_var) := as.numeric(!!as.name(time_var))) %>%
+    tidyr::pivot_longer(
       cols = starts_with("X"),
       names_to = "temp_id",
       names_transform = list(temp_id = readr::parse_number),
       values_to = "point.pred"
     ) %>%
-    rename(!!as.name(id_var) := temp_id) %>%
-    inner_join(
+    dplyr::rename(!!as.name(id_var) := temp_id) %>%
+    dplyr::inner_join(
       treat_data %>% 
         dplyr::select(!!as.name(id_var), !!as.name(time_var), !!as.name(outcome_var), Treatment_Period) %>%
-        rename(response = outcome_var),
+        dplyr::rename(response = outcome_var),
       by = c(id_var, time_var)
     ) %>%
-    mutate(point.effect = response - point.pred)
+    dplyr::mutate(point.effect = response - point.pred)
   
   
   if (!is.null(counterfac_var)) {
     df_scdid_series <- df_scdid_series %>%
-      left_join(
+      dplyr::left_join(
         treat_data %>%
           dplyr::select(id_var, time_var, counterfac_var),
         by = c(id_var, time_var)
       ) %>%
-      mutate(
+      dplyr::mutate(
         cf_point.effect = (response - !!as.name(counterfac_var)),
         cf_pct.effect = (response / !!as.name(counterfac_var)) - 1
       )
   }
   
   # add a column with relative (pct) effect
-  df_scdid_series <- df_scdid_series %>% mutate(
+  df_scdid_series <- df_scdid_series %>% dplyr::mutate(
     pct.effect = (response / point.pred) - 1
   )
   

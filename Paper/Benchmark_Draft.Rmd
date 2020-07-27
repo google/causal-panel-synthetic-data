@@ -20,13 +20,15 @@ The original formulation of SCM predicted counterfactual outcomes as a convex co
 
 While this expansive and expanding toolkit provides practitioners with an abundance of choice, it can be hard for practicioners to determine which method is most suitable for their specific purpose. In this paper, our goal is to provide a systematic empirical comparison of these methods as well as an R package intended to guide users to methodologies most suited to their data. Our Monte Carlo comparison relies on a common synthetic DGP framework nesting selection into treatment (random assignment, selection on observables, selection on unobservables), overlap in treated and control time series, heterogeneity in treatment impact and decay, and heterogeneity in the auto-correlation of outcomes. Because the number of potential models is quite large, we focus on a subset primarily based on existing package infrastructure in R -- namely CausalImpact, Gsynth, Matrix Completion, and SCDID. 
 
-Several papers provide a starting point for our analysis, most notably Gobillon and Magnac (2016) who conduct Monte Carlo experiments in a similar envirionment, comparing several variations of Bai (2009)'s IFE model^[These include standard IFE to compute counterfactual, IFE with a treatment dummy, IFE with counterfactuals based on matches from estimated factor loadings, IFE with counterfactual constrained to SCM weights based on factor loadings], as well as SCM and standard Difference-in-differences. They conclude that each method is unbiased in their baseline case with random assignment to treatment, but upon introducing correlations between loadings and treatment assignment, all methods become severely biased except for standard IFE and IFE with a treatment dummy^[Difference-in-differences is also unbiased here, but the authors demonstrate that this is an artifact of their main DGP.].
+Several papers provide a starting point for our analysis, most notably Samartsidis et al (2019), who provide a synthesis of the literature on many of these estimation methods and compare their results in an empirical example. Their focus is primarily on describing the various modeling approaches, including uncertainty estimates and inference, drawing connections between the approaches, and describing diagnostics researchers should abide by to determine whether a method is appropriate for the given context. We build off of this work by focusing instead on the empirical comparisons across Monte Carlo simulations, emphasizing a number of distinct particularities in the DGP and how these affect performance across each approach.
+
+Gobillon and Magnac (2016) conduct Monte Carlo experiments in a similar envirionment, comparing several variations of Bai (2009)'s IFE model^[These include standard IFE to compute counterfactual, IFE with a treatment dummy, IFE with counterfactuals based on matches from estimated factor loadings, IFE with counterfactual constrained to SCM weights based on factor loadings], as well as SCM and standard Difference-in-differences. They conclude that each method is unbiased in their baseline case with random assignment to treatment, but upon introducing correlations between loadings and treatment assignment, all methods become severely biased except for standard IFE and IFE with a treatment dummy^[Difference-in-differences is also unbiased here, but the authors demonstrate that this is an artifact of their main DGP.].
 
 In a similar vein, Xu (2017) reports results comparing IFE and SCM to their proposed GSC (Gsynth) estimator, which first estimates latent factors using donor units, then estimates factor loadings for each treated observation, and ultimately combines the two to compute counterfactual. The Monte Carlo experiments, using a modified version of the DGP in Bai (2009) and Gobillon and Magnac (2016), suggest that the Gsynth method is less biased than traditional difference-in-differences when there exist unobservable, decomposable time-varying confounders, and is less biased than IFE under heterogeneous treatment effects. Lastly, they show that Gsynth tends to be more efficient than SCM, and demonstrate the robustness of these results by recomputing the metrics using cross-validation to estimate the number of factors instead of assuming the correct model specification.
 
 Finally, Gardeazabal and Vega-Bayo (2017) sample from existing data as well as their synthetic DGP to compare SCM to a panel data approach (IFE) by Hsiao et al (2012) under different circumstances. Interestingly, they explore how robust the methodologies are to changes in the donor pool -- selecting the subsample of donors from those that have positive weights according to SCM or those that are statististically significant under the IFE approach -- and conclude that SCM is more robust to these alterations. However, in simulation studies focusing on cases with bad pre-treatment matches (defined by Mean Absolute Error, MAE), the results suggest that SCM is much more biased, while IFE models are unbiased but have large confidence intervals.
 
-Our benchmarking exercise adds to this existing literature in several ways. First, we provide a more expansive set of comparisons by introducing generalized models on a common DGP; SCDID generalizates both Difference-in-differences and SCM; the Gsynth package (Xu, 2017) provides implementations for one or two-way fixed effects, IFE using EM (Gobillon and Magnac, 2016), Matrix Completion (Athey et al 2018), as well as the Gsynth algorithm; CausalImpact covers a large number of time series models under the umbrella of BSTS (including ARIMA models). Second, the flexibility of our DGP allows us to examine a number of interesting cases with the change of input parameters. Third, inspired by an expansive literature on forecasting time-series, we provide a simple characterization of the data using time-series features such as ACF and entropy, and analyze whether differences in these features are predictive of differences in methodology performance (Kang et al 2017). Fourth, borrowing from machine learning, we study whether ensembles can provide performance boosts in this context (Hastie et al, 2013; Athey et al, 2019).
+Our benchmarking exercise adds to this existing literature in several ways. First, we provide a more expansive set of comparisons relative to existing MC studies by introducing generalized models on a common DGP; SCDID generalizates both Difference-in-differences and SCM; the Gsynth package (Xu, 2017) provides implementations for one or two-way fixed effects, IFE using EM (Gobillon and Magnac, 2016), Matrix Completion (Athey et al 2018), as well as the Gsynth algorithm; CausalImpact covers a large number of time series models under the umbrella of BSTS (including ARIMA models). Second, the flexibility of our DGP allows us to examine each approach under a number of interesting cases. Third, inspired by an expansive literature on forecasting time-series, we provide a simple characterization of the data using time-series features such as ACF and entropy, and analyze whether differences in these features are predictive of differences in methodology performance (Kang et al 2017). Fourth, borrowing from machine learning, we study whether ensembles can provide performance boosts in this context (Hastie et al, 2013; Athey et al, 2019).
 
 The rest of the paper proceeds as follows.  Section \@ref(sec:methods) provides a brief overview of each of the methods we analyze herein, with appropriate references for further information. Section \@ref(sec:dgp) provides an annotated walkthrough our DGP, which serves as the basis for all of our MCMC simulations.
 
@@ -65,10 +67,8 @@ We walk through the details of our DGP code for ease of use. The DGP has a core 
 
 ```{r core_dgp_fun}
 
-
 #TODO(alexdkellogg): allow dgp to be covariates only or factors only
 #TODO(alexdkellogg): allow num_periods directly rather than dates
-#TODO(alexdkellogg): introduce coeff vector and have xBeta go into Y
 factor_synthetic_dgp<-function(num_entries=2000,
                                date_start="2017-01-01",
                                first_treat="2018-07-01",
@@ -88,9 +88,12 @@ factor_synthetic_dgp<-function(num_entries=2000,
                                num_factors=3,
                                loading_scale=0,
                                intercept_scale=0,
-                               seed=19){ 
+                               conditional_impact_het=-0,
+                               rescale_y_mean=2.5e4,
+                               seed=19,
+                               log_output=T){ 
   #rescale_y_max=5e8
-  #conditional_impact_het=0,
+  #=0,
   
   #Generates tibble of long form panel data using a factor-augmented AR 1
   #Each row is time period x unit unique combination.
@@ -129,6 +132,9 @@ factor_synthetic_dgp<-function(num_entries=2000,
   #intercept_scale: (-1,1) shifts the mean of a truncated normal distribution
   #   for control unit intercepts: >0 shifts the mean down (treatment is larger)
   #   and <0 shift control mean above the treatment mean.
+  #conditional_impact_het: constant added to the treatment impact for top 25%
+  #   and subtracted from bottom 25% of counterfactual y at time 1.
+  #log_output: boolean to determine whether output is log scale or exp
   #seed: random number seed
   
   
@@ -212,26 +218,27 @@ factor_synthetic_dgp<-function(num_entries=2000,
   
   #generate the counterfactual outcomes
   synth_data_full=generate_counterfactual(synth_data_full,
-                                          num_periods_inp=num_periods)
-  
+                                          num_periods_inp=num_periods,
+                                          rescale_y=rescale_y_mean)
   
   
   #generate the per period impact (taking acocunt of decay)
-  #TODO(alexdkellogg): add conditional_boost as option, larger TE for big cf
   synth_data_full=generate_treat_impact(data_inp=synth_data_full,
-                                  cond_impact_inp=conditional_impact_het)  %>%
-    dplyr::mutate(y=exp(y),
-                  y0=exp(y0),
-                  y1=exp(y1))
+                                        cond_impact_inp=
+                                          conditional_impact_het) %>%
+    dplyr::mutate(y=exp(y)*(1- log_output)+log_output*y,
+                  y0=exp(y0)*(1- log_output)+log_output*y0,
+                  y1=exp(y1)*(1- log_output)+log_output*y1) 
   
   return(synth_data_full)
 }
 ```
 
 ### Individual Level Work
-Similar to the overall process, the individual level helper function itself splits off tasks to more specific functions. In this case, there are several processes that need handling: treatment period assignment, treatment status assignment, covariate creation, and treatment impact assignment. The flow for these processes can be seen in the code below. These helper function aggregate the covariates, treatment assignment, and treatment start date into an $N$ row tibble. These in hand, the process concludes by drawing individual specific treatment impact and decay rate: $\omega_{i}, \delta_{i}$. $\omega_i \sim TN[a,b](\mu_{\omega}, s_{\omega}^2)$, where $\mu_{\omega}, s_{\omega}$ come from user input, allowing for impact to be concentrated or dispersed. One note, mentioned before, is that the bounds of the truncated normal distribution default to $[a,b]=[0,0.25]$, but can shift to $[0,\text{min}(\mu_{\omega}+0.25, 1)]$ if $\mu_{\omega}>0.25$, or $[\mu_{\omega}-0.25,0.25]$ if $\mu_{\omega}<0$. Decay rate is also drawn from a truncated normal, $\delta_i\sim TN[0,b](\mu_{\delta}, s_{\delta}^2)$, where $b=0.9$ by default, but moves to $b=1+\epsilon$ to allow for no decay if the user wishes.
+Similar to the overall process, the individual level helper function itself splits off tasks to more specific functions. In this case, there are several processes that need handling: treatment period assignment, treatment status assignment, covariate creation, and treatment impact assignment. The flow for these processes can be seen in the code below. These helper function aggregate the covariates, treatment assignment, and treatment start date into an $N$ row tibble. These in hand, the process concludes by drawing individual specific treatment impact and decay rate: $\omega_{i}, \delta_{i}$. $\omega_i \sim TN_{[a,b]}(\mu_{\omega}, s_{\omega}^2)$, where $\mu_{\omega}, s_{\omega}$ come from user input, allowing for impact to be concentrated or dispersed. One note, mentioned before, is that the bounds of the truncated normal distribution default to $[a,b]=[0,0.25]$, but can shift to $[0,\text{min}(\mu_{\omega}+0.25, 1)]$ if $\mu_{\omega}>0.25$, or $[\mu_{\omega}-0.25,0.25]$ if $\mu_{\omega}<0$. Decay rate is also drawn from a truncated normal, $\delta_i\sim TN_{[0,b]}(\mu_{\delta}, s_{\delta}^2)$, where $b=0.9$ by default, but moves to $b=1+\epsilon$ to allow for no decay if the user wishes.
 
 ```{r unit-level-flow}
+
 unit_level_simulation <- function(n_inp,
                                   type_inp, 
                                   cov_overlap_inp,
@@ -409,6 +416,7 @@ generate_loadings <- function(treat_tib_inp, loading_scale_inp,num_factors_inp,
 If instead a selection mechanism was desired, the relevant covariates (observed or unobserved) are selected, multiplied by a random normal coefficient vector, and mapped into the probability space by the logistic function. To add additional noise to the selection, a random uniform is added to the probability after this transformation (which results in scores in [0,2]), and the top proportion_treated are assigned treatment. Given this treatment assignment, we send the data off to a helper function which creates the intercept, loadings, and autocorrelation as describe above.^[Note that, as of now, the selection is not technically governed the loadings/intercept/autocorrelation, but the distribution of these variables can optionally be shifted up or down by treatment status so that treatment assignment is correlated by these variables.] An example of shifting the loadings up fro the treated group is demonstrated in Figure \@ref(fig:selection-ex-fig).
 
 ```{r treat-assignment-code}
+
 assign_treat<-function( n_inp, type_inp, cov_overlap_inp,
                         loading_scale_inp,rho_inp=rho_inp, 
                         rho_scale_inp,rho_shift_inp, num_factors_inp,
@@ -474,7 +482,6 @@ assign_treat<-function( n_inp, type_inp, cov_overlap_inp,
     return(unit_tib)
   }
 }
-
 
 ```
 
@@ -610,31 +617,38 @@ generate_factors<-function(num_factors_inp,
 generate_time_grid <- function(date_start_inp,num_periods_inp, 
                                freq_inp, num_entry_inp){
   period_dates=switch(freq_inp,
-                      "daily"=format(lubridate::ymd(date_start_inp)+lubridate::days(0:(num_periods_inp-1))),
-                      "weekly"=format(lubridate::ymd(date_start_inp)+lubridate::weeks(0:(num_periods_inp-1))),
-                      "monthly"=format(lubridate::ymd(date_start_inp)+months(0:(num_periods_inp-1)))
+                      "daily"=format(lubridate::ymd(date_start_inp)+
+                                       lubridate::days(0:(num_periods_inp-1))),
+                      "weekly"=format(lubridate::ymd(date_start_inp)+
+                                        lubridate::weeks(0:(num_periods_inp-1))),
+                      "monthly"=format(lubridate::ymd(date_start_inp)+
+                                         months(0:(num_periods_inp-1)))
   )
   
   #Identidy the relevant components of the date (day/week/etc)
   date_info_tib=switch(freq_inp,
-                        "daily" = tibble::tibble(time=seq_len(num_periods_inp),
-                                         date_t=period_dates,
-                                         day_num=lubridate::day(period_dates), 
-                                         week_num=lubridate::week(period_dates),
-                                         month_num=lubridate::month(period_dates),
-                                         quarter_num=lubridate::quarter(period_dates),
-                                         year_num=lubridate::year(period_dates)),
-                        "weekly"=tibble::tibble(time=seq_len(num_periods_inp),
-                                        date_t=period_dates,
-                                        week_num=lubridate::week(period_dates),
-                                        month_num=lubridate::month(period_dates),
-                                        quarter_num=lubridate::quarter(period_dates),
-                                        year_num=lubridate::year(period_dates)),
-                        "monthly"=tibble::tibble(time=seq_len(num_periods_inp),
-                                         date_t=period_dates,
-                                         month_num=lubridate::month(period_dates),
-                                         quarter_num=lubridate::quarter(period_dates),
-                                         year_num=lubridate::year(period_dates))
+                        "daily" = tibble::tibble(
+                          time=seq_len(num_periods_inp),
+                          date_t=period_dates,
+                          day_num=lubridate::day(period_dates), 
+                          week_num=lubridate::week(period_dates),
+                          month_num=lubridate::month(period_dates),
+                          quarter_num=lubridate::quarter(period_dates),
+                          year_num=lubridate::year(period_dates)),
+                                         
+                        "weekly"=tibble::tibble(
+                          time=seq_len(num_periods_inp),
+                          date_t=period_dates,
+                          week_num=lubridate::week(period_dates),
+                          month_num=lubridate::month(period_dates),
+                          quarter_num=lubridate::quarter(period_dates),
+                          year_num=lubridate::year(period_dates)),
+                        "monthly"=tibble::tibble(
+                          time=seq_len(num_periods_inp),
+                          date_t=period_dates,
+                          month_num=lubridate::month(period_dates),
+                          quarter_num=lubridate::quarter(period_dates),
+                          year_num=lubridate::year(period_dates))
                         )
   
   return( date_info_tib )
@@ -648,8 +662,6 @@ Our DGP supports a minimum of 3 factors so that the trend and seasonal component
 
 
 ```{r extra-factors-code}
-
-
 add_extra_factors<-function(factor_tib,col_in,num_factors_inp,
                             num_periods_inp,
                              ar_model_inp){
@@ -732,7 +744,7 @@ The final step in the DGP computes the counterfactual outcome process and adds t
 
 
 ```{r outcome-loadings-code}
-generate_counterfactual<-function(data_inp,num_periods_inp){
+generate_counterfactual<-function(data_inp,num_periods_inp, rescale_y){
   
   outcome_series=data_inp %>%
     dplyr::select(time, entry, intercept, autocorr, 
@@ -744,17 +756,32 @@ generate_counterfactual<-function(data_inp,num_periods_inp){
     dplyr::select(-tidyselect::matches("loading|factor")) %>%
     dplyr::mutate(factor_loadings=computed_factor_vec)
   
-  #TODO(alexdkellogg): add in the covariates
-  # Should this be in the outcome process or just y0=outcome_ar+xB?
   outcome_ar=compute_outcome_process(outcome_series,num_periods_inp)
   
+  xvars=data_inp %>% 
+    dplyr::distinct(entry, .keep_all=T) %>%
+    dplyr::select(tidyselect::matches("obs")) %>%
+    as.matrix() 
+  
+  x_beta=xvars %*% stats::rnorm(n=ncol(xvars), sd=0.5) %>%
+    as.vector()
+  
+  x_betaXwalk=tibble::tibble(entry=seq_len(length(x_beta)),
+                             xbeta=x_beta) 
   outcome_series=outcome_series %>%
+    dplyr::left_join(x_betaXwalk, by="entry") %>%
     dplyr::mutate(factor_loadings=computed_factor_vec,
-                  y0=outcome_ar+intercept+stats::rnorm(dplyr::n(), sd=0.5)) %>%
+                  indiv_component=intercept+xbeta,
+                  y0=outcome_ar+indiv_component+stats::rnorm(dplyr::n(), sd=0.5))
+  
+  outcome_series_rescaled=outcome_series %>%
+    dplyr::mutate(de_sd_y0=(y0/sd(y0)),
+                  rescaled_y=de_sd_y0-(mean(de_sd_y0)-log(rescale_y)),
+                  y0=1.125*rescaled_y) %>%
     dplyr::select(time, entry, factor_loadings, y0)
   
   return(data_inp %>% 
-           dplyr::inner_join(outcome_series, by=c("time", "entry")) %>%
+           dplyr::inner_join(outcome_series_rescaled, by=c("time", "entry")) %>%
            dplyr::select(time, entry, treated, treatment_period,y0,
                          factor_loadings, dplyr::everything())
          )
@@ -848,3 +875,8 @@ generate_treat_impact<-function(data_inp=synth_data_full,
                     y, y0,y1,
                     dplyr::everything()))
 }
+```
+
+
+
+
