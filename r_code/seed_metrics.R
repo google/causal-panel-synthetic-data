@@ -1,5 +1,6 @@
 source(here("r_code/analysis_metrics.R"))
 pacman::p_load(dplyr, furrr, tidyr, resample, tibble)
+
 compute_jackknife_bias<-function(tot_list, alpha_ci = 0.95, horizon=5){
   tot_tib=tot_list %>% 
     dplyr::bind_rows() %>%
@@ -137,7 +138,7 @@ compute_jackknife_metrics<-function(estimated_tib_list, time_var = "period",
                                     prediction_var = "point.pred",
                                     counterfac_var = "counter_factual",
                                     treat_period_var = "Treatment_Period",
-                                    pct_eff_flag = T,
+                                    pct_eff_flag = F,
                                     alpha_ci=0.95,
                                     horizon=5){
   

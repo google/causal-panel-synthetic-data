@@ -1,5 +1,5 @@
 pacman::p_load(dplyr, tibble, CausalImpact,gsynth,tidyr,Matrix, quadprog,
-               janitor, stats)
+               janitor, stats,readr)
 
 
 ############################################
@@ -104,7 +104,6 @@ estimate_causalimpact_series <- function(data_full,
   
   # We want to create a "causal impact helper function" that only takes the control matrix 1, and then binds the particular treated unit to the control matrix
   # and then itself calls causal impact. We will call this function in parallel, and thus only need one 1 repition of the large control matrix per call
-  tic()
   # Parallelized computation of the causal impact
   list_of_causalimpact_series <- furrr::future_pmap(list(
     list_of_input_data,
@@ -116,8 +115,7 @@ estimate_causalimpact_series <- function(data_full,
   ) %>%
     furrr::future_map(~ .$series) %>%
     furrr::future_map(~ as.data.frame(.))
-  toc()
-  
+
   period_entry_rowlabs_df <- data.frame(
     tempid = rep(sort(tr_entries),
                  each = max(data_full[[time_var]])
@@ -494,7 +492,6 @@ estimate_scdid_series <- function(data_full,
   # Dataframe containing the full series of the outcome (all T), as well as predicted (counterfactual) outcome
   # and the associated effects by id_Var, time_var
   
-  tic("Identified Treat and Control Data")
   # Split the dataset based on whether they are ever treated
   tr_entries <- data_full %>%
     dplyr::filter(!!as.name(treat_indicator) > 0) %>%
@@ -511,20 +508,18 @@ estimate_scdid_series <- function(data_full,
     dplyr::distinct(!!as.name(id_var)) %>%
     nrow()
   
-  
   # In the loop, we also want to compute the SCDID Estimates as they require a single observation at a time
   # Because SCDID cannot handle staggered adoption, introduce one treated unit at a time
   # THIS GOES WITHIN Causal Impact For Loop
   treat_data <- data_full %>%
     dplyr::filter(!!as.name(id_var) %in% tr_entries) %>%
-    dplyr::mutate(new_id = dplyr::group_indices(., c(!!as.name(id_var))) + n0) %>%
+    dplyr::mutate(new_id = as.integer(as.factor(!!as.name(id_var))) + n0) %>%
     dplyr::arrange(!!as.name(time_var), new_id) %>%
     dplyr::group_by(new_id) %>%
     dplyr::mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
     dplyr::ungroup()
   
-  toc()
-  
+
   # create the control matrix once, which is an input to sdid estimator
   control_matrix <- tidyr::spread(
     control_data %>% dplyr::select(!!as.name(time_var), !!as.name(id_var), !!as.name(outcome_var)),
@@ -534,45 +529,34 @@ estimate_scdid_series <- function(data_full,
     as.matrix() %>%
     t()
   
-  tic("splitting treat data by ID")
   split_treat_data <- treat_data %>% split(.[[id_var]])
-  toc()
-  
+
   # for each treated unit, find when it was treated
-  tic("finding list of treat times")
   list_of_treat_times <- split_treat_data %>%
     lapply(., function(x) {
       x %>%
         dplyr::select(Treatment_Period) %>%
         dplyr::first()
     })
-  toc()
-  
+
   # split the treated units into individual vectors
-  tic("creating indiv outcome matrix")
   list_of_treat_data <- split_treat_data %>% lapply(., function(x) {
     x %>%
       dplyr::select(!!as.name(outcome_var)) %>%
       as.matrix()
   })
-  toc()
-  
-  tic("binidng indiv target to its treat time")
-  list_inputs <- Map(cbind, list_of_treat_data, list_of_treat_times)
-  toc()
-  
 
-  tic("Mapping to SCDID fun")
+  list_inputs <- Map(cbind, list_of_treat_data, list_of_treat_times)
+
+
   list_of_scdid_series <- furrr::future_map(list_inputs, nsdid_prediction, control_matrix, pre_sdid, post_sdid, nn_sdid, scale_sdid, period_sdid)
-  toc()
-  
+
   
   # compute the TE by subtracting the matrix of predictions (list_of_scdid_series) from the outcome_var
   # Reformat so that the output is the same as the other functions, namely,
   # each row represents a period-unit combination, with the outcome_var, the prediction, the effect (and the treatment time/indicator)
-  
   df_scdid_series <- list_of_scdid_series %>%
-    tibble::as_tibble() %>%
+    as.data.frame() %>%
     tibble::rownames_to_column(var = time_var) %>%
     dplyr::mutate(!!as.name(time_var) := as.numeric(!!as.name(time_var))) %>%
     tidyr::pivot_longer(
