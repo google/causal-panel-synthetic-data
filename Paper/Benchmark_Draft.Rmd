@@ -3,13 +3,20 @@ title: 'Benchmarking Time-Series Cross Sectional Methods: Synthetic Data Approac
 output:
   pdf_document: default
   bookdown::html_document2: default
+  html_document:
+    df_print: paged
+  word_document: default
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(dplyr)
+library(tictoc)
+library(gt)
 library(ggplot2)
 library(here)
+source(here("r_code/factor_dgp.R"))
+plan(multiprocess, workers=availableCores()-1)
 ```
 
 # Introduction
@@ -62,11 +69,13 @@ We allow for a number of treatment assignment mechanisms, such as random assignm
 Furthermore, we allow for varying degrees of heterogeneity in both treatment impact and decay. Our treatment effect $\tau_{it}=\omega_{i}*\delta_{it}$ flexibly covers many cases, including impact decay by setting (for example) $\delta_{it}=\delta_i^{t-T_{0i}}$ -- where $\delta_i$ itself can display heterogeneity -- as well as impact heterogeneity via $\omega_i$. 
 
 ## Implementation Details
-We walk through the details of our DGP code for ease of use. The DGP has a core function that is called with all of the arguments, and then sends much of the work to various helper functions to help keep the flow clear. The following chunk of code details the inputs to the DGP; after verifying the function inputs are feasible, we determine the length of the total time period (which depends on input dates and time frequency) as well as the time when treatment is allowed to begin. We then send the relevant subset of inputs to a helper function which creates the time-invariant (unit level) variables, another relevant subset to a helper creating the time-varying variables (factors), bring the two together to form our unit by time grid, generate the counterfactual outcome process, and add the treatment to the counterfactual. 
+We walk through the details of our DGP code for ease of use. The DGP has a core function that is called with all of the arguments, and then sends much of the work to various helper functions to help keep the flow clear. The following chunk of code details the inputs to the DGP; after verifying the function inputs are feasible, we determine the length of the total time period (which depends on input dates and time frequency) as well as the time when treatment is allowed to begin. We then send the relevant subset of inputs to a helper function which creates the time-invariant (unit level) variables, another relevant subset to a helper creating the time-varying variables (factors), bring the two together to form our unit by time grid, generate the counterfactual outcome process, and add the treatment to the counterfactual. Note that "factor_synthetic_dgp()" generates $lnY^*_{it}(0)=\alpha_i+\rho_ilnY^*_{i,t-1}(0)+F_t\lambda_i'$, which is then supplemented with random (for now, iid) noise to create bootstrap datasets for bias, inference, and coverage estimates.
 
 
-```{r core_dgp_fun}
+```{r core_dgp_fun, eval=FALSE}
 
+pacman::p_load(dplyr, furrr, tibble, tidyr, stats, lubridate,
+               glue, truncnorm,MASS)
 #TODO(alexdkellogg): allow dgp to be covariates only or factors only
 #TODO(alexdkellogg): allow num_periods directly rather than dates
 factor_synthetic_dgp<-function(num_entries=2000,
@@ -90,8 +99,7 @@ factor_synthetic_dgp<-function(num_entries=2000,
                                intercept_scale=0,
                                conditional_impact_het=-0,
                                rescale_y_mean=2.5e4,
-                               seed=19,
-                               log_output=T){ 
+                               seed=19){ 
   #rescale_y_max=5e8
   #=0,
   
@@ -134,8 +142,7 @@ factor_synthetic_dgp<-function(num_entries=2000,
   #   and <0 shift control mean above the treatment mean.
   #conditional_impact_het: constant added to the treatment impact for top 25%
   #   and subtracted from bottom 25% of counterfactual y at time 1.
-  #log_output: boolean to determine whether output is log scale or exp
-  #seed: random number seed
+  #rescale_y_mean: number representing the target mean of exp(counterfactual)
   
   
   
@@ -225,19 +232,28 @@ factor_synthetic_dgp<-function(num_entries=2000,
   #generate the per period impact (taking acocunt of decay)
   synth_data_full=generate_treat_impact(data_inp=synth_data_full,
                                         cond_impact_inp=
-                                          conditional_impact_het) %>%
-    dplyr::mutate(y=exp(y)*(1- log_output)+log_output*y,
-                  y0=exp(y0)*(1- log_output)+log_output*y0,
-                  y1=exp(y1)*(1- log_output)+log_output*y1) 
+                                          conditional_impact_het) 
   
   return(synth_data_full)
+  
+  
+  
+}
+
+noisify_draw<-function(data_inp, seed,log_output=T, sig_y=1){
+  set.seed(seed)
+  eps=stats::rnorm(nrow(data_inp), sd=sig_y)
+  return(data_inp %>%
+    dplyr::mutate(y=exp(y+eps)*(1- log_output)+log_output*(y+eps),
+                  y0=exp(y0+eps)*(1- log_output)+log_output*(y0+eps),
+                  y1=exp(y1+eps)*(1- log_output)+log_output*(y1+eps)))
 }
 ```
 
 ### Individual Level Work
 Similar to the overall process, the individual level helper function itself splits off tasks to more specific functions. In this case, there are several processes that need handling: treatment period assignment, treatment status assignment, covariate creation, and treatment impact assignment. The flow for these processes can be seen in the code below. These helper function aggregate the covariates, treatment assignment, and treatment start date into an $N$ row tibble. These in hand, the process concludes by drawing individual specific treatment impact and decay rate: $\omega_{i}, \delta_{i}$. $\omega_i \sim TN_{[a,b]}(\mu_{\omega}, s_{\omega}^2)$, where $\mu_{\omega}, s_{\omega}$ come from user input, allowing for impact to be concentrated or dispersed. One note, mentioned before, is that the bounds of the truncated normal distribution default to $[a,b]=[0,0.25]$, but can shift to $[0,\text{min}(\mu_{\omega}+0.25, 1)]$ if $\mu_{\omega}>0.25$, or $[\mu_{\omega}-0.25,0.25]$ if $\mu_{\omega}<0$. Decay rate is also drawn from a truncated normal, $\delta_i\sim TN_{[0,b]}(\mu_{\delta}, s_{\delta}^2)$, where $b=0.9$ by default, but moves to $b=1+\epsilon$ to allow for no decay if the user wishes.
 
-```{r unit-level-flow}
+```{r unit-level-flow, eval=FALSE}
 
 unit_level_simulation <- function(n_inp,
                                   type_inp, 
@@ -289,7 +305,7 @@ unit_level_simulation <- function(n_inp,
 
 We start with the simplest process, which designates treatment time. Treatment time is dictated by a geometric distribution as well as user input for when treatment may start; the geometric distribution models the count of independent Bernoulli trials up to the first success when the probability of each trial is $p$. Depending on the number of post treatment periods available to us, we choose $p \in (0.25, 0.2, 0.15, 0.1)$  to help ensure that we have a reasonable amount of post treatment available for the majority of our observations (See Figure \@ref(fig:treat-start-time) for an example). 
 
-```{r treat-time-assignment}
+```{r treat-time-assignment, eval=FALSE}
 assign_treat_time<-function(treat_tib_inp, treat_start, num_periods_inp){
   #Geometric distribution parameter selected based on time
   #Goal is to have most treatment assigned before end date
@@ -321,7 +337,7 @@ hist(demo_geom_tib$treatment_period, breaks=25, xlab = "Treatment Period",
 
 We next discuss treatment assignment; because we want to handle selection and covariate overlap, our treatment assignment function actually handles much of the work at the individual level. Specifically, it first generates covariates with a fraction (the proportion treated) of the covariates coming from a distribution shifted according to a covariate overlap input (can be shifted up or down).^[Currently, these covariates only affect selection into treatment and are fixed in number and type. We could allow for generalization here by allowing the user to input the desired number of X's, and then randomly selecting a subset (and storing the name) for use in the selection process?] Next, in the case of random assignment, a random uniform variable is generated independent on covariates, and the top proportion treated fraction are assigned treatment, and are passed on to another function that assigns individual specific intercepts, loadings, and autocorrelation parameter. 
 
-```{r obs-unobs-covariates}
+```{r obs-unobs-covariates, eval=FALSE}
 
 #TODO(alexdkellogg): Generalize to allow for user inputted number of xs
 gen_covariates<-function(n_inp, cov_overlap_inp, frac_shifted){
@@ -371,7 +387,7 @@ gen_covariates<-function(n_inp, cov_overlap_inp, frac_shifted){
 
 Intercepts are distributed according to $\alpha_i \sim TN_{[5,10]}(\mu_{\alpha},0.7^2)$, where $\mu_{\alpha}=7.5-(1-D_{i})*het_{int}$ is a function of treatment status. Individual autocorrelation is drawn from a truncated normal as well, $\rho_i\sim TN_{[0,0.995]}(\mu_{\rho}*(1-D_{i})*het_{\rho}, s_{\rho}^2)$, with $\mu_{\rho},het_{\rho}, s_{\rho}^2$ all coming from user input. This allows for homogeneity in $\rho$, heterogeneity alike for treated and untreated units, or differential means by treatment status. Finally, $r$ loadings -- according to the number of factors the user requested -- are drawn from $\lambda_i\sim\beta(2-(1-D_i)het_{load}, 2-D_ihet_{load}),$ so that for $het_{load}>0$, loadings are drawn from a distribution shifted towards one for treated and shifted toward zero for control units (opposite if below 0).
 
-```{r loadings-code}
+```{r loadings-code, eval=FALSE}
 
 generate_loadings <- function(treat_tib_inp, loading_scale_inp,num_factors_inp,
                               int_scale_inp,rho_inp, rho_scale_inp, rho_shift_inp){
@@ -415,7 +431,7 @@ generate_loadings <- function(treat_tib_inp, loading_scale_inp,num_factors_inp,
 
 If instead a selection mechanism was desired, the relevant covariates (observed or unobserved) are selected, multiplied by a random normal coefficient vector, and mapped into the probability space by the logistic function. To add additional noise to the selection, a random uniform is added to the probability after this transformation (which results in scores in [0,2]), and the top proportion_treated are assigned treatment. Given this treatment assignment, we send the data off to a helper function which creates the intercept, loadings, and autocorrelation as describe above.^[Note that, as of now, the selection is not technically governed the loadings/intercept/autocorrelation, but the distribution of these variables can optionally be shifted up or down by treatment status so that treatment assignment is correlated by these variables.] An example of shifting the loadings up fro the treated group is demonstrated in Figure \@ref(fig:selection-ex-fig).
 
-```{r treat-assignment-code}
+```{r treat-assignment-code, eval=FALSE}
 
 assign_treat<-function( n_inp, type_inp, cov_overlap_inp,
                         loading_scale_inp,rho_inp=rho_inp, 
@@ -546,7 +562,7 @@ At a conceptual level, the first factor represents a time trend, the second capt
 
 
 
-```{r 3factors-gen-code}
+```{r 3factors-gen-code, eval=FALSE}
 
 generate_factors<-function(num_factors_inp, 
                            num_periods_inp, num_entry_inp,
@@ -661,7 +677,7 @@ Our DGP supports a minimum of 3 factors so that the trend and seasonal component
 
 
 
-```{r extra-factors-code}
+```{r extra-factors-code, eval=FALSE}
 add_extra_factors<-function(factor_tib,col_in,num_factors_inp,
                             num_periods_inp,
                              ar_model_inp){
@@ -740,10 +756,11 @@ panel.background = element_blank(), axis.line = element_line(colour = "black"))+
 
 ## Computing Counterfactuals
 
-The final step in the DGP computes the counterfactual outcome process and adds the treatment impact at each time period to round out our two potential outcomes as well as our observed outcome. As defined above, the outcome follows an AR(1) process with innovations governed by the time-varying factors and their individual specific loadings, as well as iid noise. Thus, we first compute the $T \times 1$ dimensional column  $F_t\lambda_i'$ for each individual in parallel. With these computed, we simulate the AR(1) process for the counterfactual, where the process is once again governed by an individual specific parameter -- $\rho_i$ -- allowing for parallelization of the code.^[As before, we allow a burn in period of 500.] With this series generated, we add the intercept by entry and a noise term drawn iid from $\mathcal{N}(0,0.5^2)$ for each entry-time combination. Before applying treatment effects, we rescale the potential (untreated) outcome so that the distribution resemebles its empirical counterpart.
+The final step in the DGP computes the counterfactual outcome process and adds the treatment impact at each time period to round out our two potential outcomes as well as our observed outcome. As defined above, the outcome follows an AR(1) process with innovations governed by the time-varying factors and their individual specific loadings, as well as iid noise. Thus, we first compute the $T \times 1$ dimensional column  $F_t\lambda_i'$ for each individual in parallel. With these computed, we simulate the AR(1) process for the counterfactual, where the process is once again governed by an individual specific parameter -- $\rho_i$ -- allowing for parallelization of the code.^[As before, we allow a burn in period of 500.] With this series generated, we add the intercept by entry before applying treatment effects, and rescale the potential (untreated) outcome so that the distribution resembles its empirical counterpart.
 
 
-```{r outcome-loadings-code}
+```{r outcome-loadings-code, eval=FALSE}
+
 generate_counterfactual<-function(data_inp,num_periods_inp, rescale_y){
   
   outcome_series=data_inp %>%
@@ -772,7 +789,7 @@ generate_counterfactual<-function(data_inp,num_periods_inp, rescale_y){
     dplyr::left_join(x_betaXwalk, by="entry") %>%
     dplyr::mutate(factor_loadings=computed_factor_vec,
                   indiv_component=intercept+xbeta,
-                  y0=outcome_ar+indiv_component+stats::rnorm(dplyr::n(), sd=0.5))
+                  y0=outcome_ar+indiv_component)
   
   outcome_series_rescaled=outcome_series %>%
     dplyr::mutate(de_sd_y0=(y0/sd(y0)),
@@ -788,6 +805,7 @@ generate_counterfactual<-function(data_inp,num_periods_inp, rescale_y){
   
 
 }
+
 
 compute_factor_loadings <- function(data_inp){
   #create a list of factor loadings split by individual
@@ -836,7 +854,7 @@ compute_outcome_process<-function(data_inp,num_periods_inp){
 
 The final step is then to add the treatment impact. Throughout our DGP, we have assigned each unit a hypothetical treatment assignment time, treatment impact, and treatment decay rate; this allows us to generate the treatment impact for all units, regardless of their true treatment status, and store each of the two potential outcomes in our final tibble. For each time period, we compute the individual specific treatment impact as the product of the original impact and the amount of decay by that particular point in time. We also allow for a conditional treatment impact boost (or drop) to the top 25\% and conditional drop (or boost) to the bottom 25\% of observations based on their counterfactual outcome at $t=1$. For time before the treatment period, this is simply 0, yielding our counterfactual. For the post-treatment periods, we can add this quantity to the potential (untreated) outcome to form our potential (treated) outcome for each individual, and finally, assign the observed outcome following the standard framework. Lastly, we take the exponent of each of the three outcome variables, as outcome distributions are roughly lognormal, and this shifts the scale to the empirical benchmark.
 
-```{r treat-impact-code}
+```{r treat-impact-code, eval=FALSE}
 generate_treat_impact<-function(data_inp=synth_data_full, 
                                 cond_impact_inp){
   #determine which observations get a conditional treatment boost
@@ -877,6 +895,578 @@ generate_treat_impact<-function(data_inp=synth_data_full,
 }
 ```
 
+## Computation Time
+
+We briefly describe the performance of this DGP and how it scales with increasing number of entries and/or time periods, as well as the desired number of draws. We choose the base case (with default parameters, including only 3 factors) as our point of departure, which takes about 0.72 seconds. From here, quintupling the number of entries (ceteris paribus) increases runtime by about 2.5x, doubling the number of time periods leaves the runtime approximately the same, and quintupling the entries while also doubling time increases runtime by roughly 3.3x. Drawing 100 samples from the baseline DGP takes about 5 seconds when running in parallel on 3 cores, scaling the draws to 500 takes about 5x as long (23 seconds, omitted here), and 500 draws from the N=1000 DGP takes about 120 seconds (omitted here).
+
+```{r runtime-dgp, echo=FALSE}
+set.seed(112233)
+tic("DGP Baseline computation time, T=121; N=200")
+base1=AA_data_no_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
+                                         first_treat="2017-07-01",
+                                         date_end="2020-01-01",
+                                         num_entries=200,
+                                         prop_treated=0.25,
+                                         treat_impact_sd = 0, 
+                                         treat_impact_mean = 0, 
+                                         rho=0.9,
+                                         rescale_y_mean = 2.5e3,
+                                         cov_overlap_scale = 0,
+                                         seed=42)
+toc()
+
+tic("DGP Baseline computation time, T=121; N=1000")
+base2=AA_data_no_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
+                                         first_treat="2017-07-01",
+                                         date_end="2020-01-01",
+                                         num_entries=1000,
+                                         prop_treated=0.25,
+                                         treat_impact_sd = 0, 
+                                         treat_impact_mean = 0, 
+                                         rho=0.9,
+                                         rescale_y_mean = 2.5e3,
+                                         cov_overlap_scale = 0,
+                                         seed=42)
+toc()
+
+tic("DGP Baseline computation time, T=241; N=200")
+AA_data_no_sel_base=factor_synthetic_dgp(date_start="2000-01-01",
+                                         first_treat="2010-07-01",
+                                         date_end="2020-01-01",
+                                         num_entries=200,
+                                         prop_treated=0.25,
+                                         treat_impact_sd = 0, 
+                                         treat_impact_mean = 0, 
+                                         rho=0.9,
+                                         rescale_y_mean = 2.5e3,
+                                         cov_overlap_scale = 0,
+                                         seed=42)
+toc()
+
+tic("DGP Baseline computation time, T=241; N=1000")
+AA_data_no_sel_base=factor_synthetic_dgp(date_start="2000-01-01",
+                                         first_treat="2010-07-01",
+                                         date_end="2020-01-01",
+                                         num_entries=1000,
+                                         prop_treated=0.25,
+                                         treat_impact_sd = 0, 
+                                         treat_impact_mean = 0, 
+                                         rho=0.9,
+                                         rescale_y_mean = 2.5e3,
+                                         cov_overlap_scale = 0,
+                                         seed=42)
+toc()
+
+options(future.globals.maxSize= 891289600)
+tic("100 draws from N=200, T=121")
+base1_100=furrr::future_map(.x=sample(1000:9999, size = 100), .f=~noisify_draw(
+  data_inp=base1,seed=.x))
+toc()
+rm(base1_100, base1, base2)
+```
 
 
 
+
+# Preliminary Results of MC Experiments
+To compare the relevant methods under our aforementioned DGP, we take a draw of $Y^*$ under the desired parameters and generate $M$ draws of noise -- forming $M$ datasets with $Y_m=Y*+\epsilon_m$. Each $Y_m$ provides us $N_{tr}$ individual treatment effect series, over which we jackknife the $\hat{ATT}$ and its $1-\alpha/2$ confidence interval (for a given post-treatment time period).^[A more complete implementation, which we hope to have available soon, uses Chernozhukov et al (2019)'s exact conformal inference for this type of data instead of the jackknife for the confidence intervals.]  Once we have obtained $\hat{ATT}$ estimates for each of the $M$ draws of noise, we can compute a number of important metrics to compare across methods: 1) coverage of the confidence interval, by counting the percentage of $M$ for which the true ATT lies within the jackknifed bounds; 2) the bias, by applying the jackknife over the $M$ draws on the mean of $\hat{ATT_m}-ATT$; 3) the variance of $\hat{ATT}$, which we jackknife; 4) RMSE, which we compute by jackknifing the mean of $(Y_{it}-Y^*_{it})^2$ for post treatment $t$ and taking the square root.
+
+## DGP 1: High ACF, Intercept Selection
+Our first comparison involves a placebo DGP with high autocorrelation in the outcome process, and varying amounts of selection, as demonstrated in the R code below.^[To be clear, we assign treatment randomly across the units in both processes, but in our selection condition here, we shift the mean of the intercept $\alpha_i$ down for control units compared to treatment units.] We set the total number of time periods to be 121 months, and include a total number of 200 entries, 80 of whom are treated. The key difference is in the value of "intercept_scale" -- there are no shifts to the mean of the intercept distribution in the first process, but the mean is shifted down by 0.75 for control units in the second. Note that in setting the same seed for the DGPs (both in terms of $Y*$ and $\{\epsilon_m\}$), we home in on the impact of shifting said intercept.^[We also rescale the output so that it is roughly lognormal around a mean of 9.]
+
+```{r dgp-1, eval=FALSE}
+AA_data_no_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
+                                         first_treat="2017-07-01",
+                                         date_end="2020-01-01",
+                                         num_entries=200,
+                                         prop_treated=0.25,
+                                         treat_impact_sd = 0, 
+                                         treat_impact_mean = 0, 
+                                         rho=0.9,
+                                         rescale_y_mean = 2.5e3,
+                                         cov_overlap_scale = 0,
+                                         seed=42)
+
+AA_data_no_sel_unformatted=furrr::future_map(.x=seeds, 
+                                             .f=~noisify_draw(
+                                               data_inp=AA_data_no_sel_base,
+                                               seed=.x))
+
+
+AA_data_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
+                                      first_treat="2017-07-01",
+                                      date_end="2020-01-01",
+                                      num_entries=200,
+                                      prop_treated=0.25,
+                                      treat_impact_sd = 0, 
+                                      treat_impact_mean = 0, 
+                                      rho=0.9,
+                                      rescale_y_mean = 2.5e3,
+                                      cov_overlap_scale = 0,
+                                      intercept_scale = 0.75,
+                                      seed=42)
+
+AA_data_sel_unformatted=furrr::future_map(.x=seeds, 
+                                             .f=~noisify_draw(
+                                               data_inp=AA_data_sel_base,
+                                               seed=.x))
+```
+After estimating the Gsynth (IFE), SCDID, MC, and CausalImpact methods on the above data, we report the RMSE, bias, and coverage for each of the estimators below (Figure \@ref(fig:high-acf-bias)). Without selection, we see that the 95% confidence intervals contain the true ATT roughly 85% of the time across the methods, with MC having the most stable performance despite under-covering. MC and CausalImpact alternate on having the lowest RMSE, though the differences are quite small, while MC consistently has the lowest bias. Selection seems to have a relevant effect only when considering the bias of the estimators, increasing it by as much as 10%. However, it does not effect the relative rankings among the estimators, as MC proves more robust to selection in this DGP. Because the plots are so similar regardless of selection, we only display the bias for the case with selection, though the table contains both sets of data. 
+```{r high-acf-data-tab, echo=FALSE}
+load(here("Data/Cloud_AA_50.RData"))
+#Create long form data for each metric
+coverage_tib=gsynth_AA_cov %>% 
+    dplyr::mutate(selection="No", method="gsynth") %>%
+    dplyr::bind_rows(
+        gsynth_AA_sel_cov %>% 
+            dplyr::mutate(selection="Yes", method="gsynth")) %>%
+    dplyr::bind_rows(
+        scdid_AA_cov %>% 
+            dplyr::mutate(selection="No", method="scdid"))%>%
+    dplyr::bind_rows(
+        scdid_AA_sel_cov %>% 
+            dplyr::mutate(selection="Yes", method="scdid"))%>%
+    dplyr::bind_rows(
+        mc_AA_cov %>% 
+            dplyr::mutate(selection="No", method="mc"))%>%
+    dplyr::bind_rows(
+        mc_AA_sel_cov %>% 
+            dplyr::mutate(selection="Yes", method="mc")) %>%
+  dplyr::bind_rows(
+        causalimpact_AA_cov %>% 
+            dplyr::mutate(selection="No", method="causalimp")) %>%
+  dplyr::bind_rows(
+        causalimpact_AA_sel_cov %>% 
+            dplyr::mutate(selection="Yes", method="causalimp")) %>%
+  dplyr::mutate(metric="coverage", metric_value=coverage_abs)%>%
+  dplyr::select(post_period_t,metric, method, selection, metric_value)
+
+
+
+rmse_tib=gsynth_overall_metrics %>% 
+  dplyr::mutate(selection="No", method="gsynth") %>%
+    dplyr::bind_rows(
+        gsynth_sel_overall_metrics %>% 
+            dplyr::mutate(selection="Yes", method="gsynth")) %>%
+    dplyr::bind_rows(
+        scdid_AA_overall_metrics %>% 
+            dplyr::mutate(selection="No", method="scdid"))%>%
+    dplyr::bind_rows(
+        scdid_AA_sel_overall_metrics %>% 
+            dplyr::mutate(selection="Yes", method="scdid"))%>%
+    dplyr::bind_rows(
+        mc_AA_overall_metrics %>% 
+            dplyr::mutate(selection="No", method="mc"))%>%
+    dplyr::bind_rows(
+        mc_AA_sel_overall_metrics %>% 
+            dplyr::mutate(selection="Yes", method="mc")) %>%
+  dplyr::bind_rows(
+        causalimpact_AA_overall_metrics %>% 
+            dplyr::mutate(selection="No", method="causalimp"))%>%
+    dplyr::bind_rows(
+        causalimpact_AA_sel_overall_metrics %>% 
+            dplyr::mutate(selection="Yes", method="causalimp")) %>%
+  dplyr::mutate(metric="rmse", metric_value=jackknife_rmse)%>%
+  dplyr::select(post_period_t,metric, method, selection, metric_value)
+
+bias_tib=gsynth_AA_bias %>% 
+  dplyr::mutate(selection="No", method="gsynth") %>%
+    dplyr::bind_rows(
+        gsynth_AA_sel_bias %>% 
+            dplyr::mutate(selection="Yes", method="gsynth")) %>%
+    dplyr::bind_rows(
+        scdid_AA_bias %>% 
+            dplyr::mutate(selection="No", method="scdid"))%>%
+    dplyr::bind_rows(
+        scdid_AA_sel_bias %>% 
+            dplyr::mutate(selection="Yes", method="scdid"))%>%
+    dplyr::bind_rows(
+        mc_AA_bias %>% 
+            dplyr::mutate(selection="No", method="mc"))%>%
+    dplyr::bind_rows(
+        mc_AA_sel_bias %>% 
+            dplyr::mutate(selection="Yes", method="mc")) %>%
+  dplyr::bind_rows(
+        causalimpact_AA_bias %>% 
+            dplyr::mutate(selection="No", method="causalimp"))%>%
+    dplyr::bind_rows(
+        causalimpact_AA_sel_bias %>% 
+            dplyr::mutate(selection="Yes", method="causalimp")) %>%
+  dplyr::mutate(metric="bias", metric_value=jackknife_abs_bias) %>%
+  dplyr::select(post_period_t, metric,metric_value, method, selection)
+
+#combine the metrics into one long form tibble, #spread the long form to wide
+metrics_tib=coverage_tib %>%
+  dplyr::bind_rows(rmse_tib) %>%
+  dplyr::bind_rows(bias_tib) %>%
+  pivot_wider(names_from = c( selection,method ), values_from=metric_value) %>%
+  dplyr::select(tidyselect::contains("No"), tidyselect::contains("Yes"),
+                dplyr::everything())
+
+#Alternatively, to group by method then selection
+ #pivot_wider(names_from = c( method, selection ), values_from=metric_value) 
+
+metrics_tib %>%
+  gt::gt(rowname_col = "post_period_t", groupname_col = "metric") %>%
+    gt::tab_header(
+        title = md("Metrics by Method"),
+        subtitle = md("Rho=0.9")
+    ) %>%
+    gt::tab_source_note(md("Notes:")) %>%
+   gt::tab_spanner_delim(delim = "_", columns=setdiff(names(metrics_tib), c("post_period_t", "metric") )) %>% 
+  tab_stubhead(label = "Selection") %>% 
+  gt::fmt_number(columns=dplyr::everything(), decimals = 3)
+
+
+```
+
+
+```{r high-acf-bias, echo=F, fig.show="hold", out.width="50%", fig.cap="Bias Estimates"}
+
+gsynth_sel_bias_plot
+
+scdid_AA_sel_bias_plot
+
+mc_AA_sel_bias_plot
+
+causalimpact_AA_sel_bias_plot
+
+```
+
+
+## DGP 2: Low ACF, Intercept Selection
+Our next comparison makes one slight change to DGP 1 -- namely, we reduce the ACF in the outcome process from $\rho=0.9$ to $\rho=0.1$. The coverage here is much closer to the nominal 95% we expect, seems more stable for SCDID compared to Gsynth/MC/CausalImpact, and hardly differs when selection is introduced. By RMSE, gsynth and MC perform almost identically -- both superior to SCDID and CausalImpact regardless of selection. Interestingly, the bias here is slightly negative for three of our estimators (gsynth, SCDID, MC) while CausalImpact has a larger and positive bias; unlike the prior DGP, bias seems to be much more robust to the introduction of selection. SCDID performs quite well on this metric, similar to MC, but the differences are again quite small.
+
+```{r dgp-2, eval=FALSE}
+AA_data_no_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
+                                         first_treat="2017-07-01",
+                                         date_end="2020-01-01",
+                                         num_entries=200,
+                                         prop_treated=0.25,
+                                         treat_impact_sd = 0, 
+                                         treat_impact_mean = 0, 
+                                         rho=0.1,
+                                         rescale_y_mean = 2.5e3,
+                                         cov_overlap_scale = 0,
+                                         seed=42)
+
+AA_data_no_sel_unformatted=furrr::future_map(.x=seeds, 
+                                             .f=~noisify_draw(
+                                               data_inp=AA_data_no_sel_base,
+                                               seed=.x))
+
+
+
+
+AA_data_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
+                                      first_treat="2017-07-01",
+                                      date_end="2020-01-01",
+                                      num_entries=200,
+                                      prop_treated=0.25,
+                                      treat_impact_sd = 0, 
+                                      treat_impact_mean = 0, 
+                                      rho=0.1,
+                                      rescale_y_mean = 2.5e3,
+                                      cov_overlap_scale = 0,
+                                      intercept_scale = 0.75,
+                                      seed=42)
+
+
+AA_data_sel_unformatted=furrr::future_map(.x=seeds, 
+                                          .f=~noisify_draw(
+                                            data_inp=AA_data_sel_base,
+                                            seed=.x))
+```
+
+```{r low-acf-data-tab, echo=FALSE}
+load(here("Data/Cloud_AA_ACF_50.RData"))
+#Create long form data for each metric
+coverage_tib=gsynth_AA_cov %>% 
+    dplyr::mutate(selection="No", method="gsynth") %>%
+    dplyr::bind_rows(
+        gsynth_AA_sel_cov %>% 
+            dplyr::mutate(selection="Yes", method="gsynth")) %>%
+    dplyr::bind_rows(
+        scdid_AA_cov %>% 
+            dplyr::mutate(selection="No", method="scdid"))%>%
+    dplyr::bind_rows(
+        scdid_AA_sel_cov %>% 
+            dplyr::mutate(selection="Yes", method="scdid"))%>%
+    dplyr::bind_rows(
+        mc_AA_cov %>% 
+            dplyr::mutate(selection="No", method="mc"))%>%
+    dplyr::bind_rows(
+        mc_AA_sel_cov %>% 
+            dplyr::mutate(selection="Yes", method="mc")) %>%
+  dplyr::bind_rows(
+        causalimpact_AA_cov %>% 
+            dplyr::mutate(selection="No", method="causalimp")) %>%
+  dplyr::bind_rows(
+        causalimpact_AA_sel_cov %>% 
+            dplyr::mutate(selection="Yes", method="causalimp")) %>%
+  dplyr::mutate(metric="coverage", metric_value=coverage_abs)%>%
+  dplyr::select(post_period_t,metric, method, selection, metric_value)
+
+
+
+rmse_tib=gsynth_overall_metrics %>% 
+  dplyr::mutate(selection="No", method="gsynth") %>%
+    dplyr::bind_rows(
+        gsynth_sel_overall_metrics %>% 
+            dplyr::mutate(selection="Yes", method="gsynth")) %>%
+    dplyr::bind_rows(
+        scdid_AA_overall_metrics %>% 
+            dplyr::mutate(selection="No", method="scdid"))%>%
+    dplyr::bind_rows(
+        scdid_AA_sel_overall_metrics %>% 
+            dplyr::mutate(selection="Yes", method="scdid"))%>%
+    dplyr::bind_rows(
+        mc_AA_overall_metrics %>% 
+            dplyr::mutate(selection="No", method="mc"))%>%
+    dplyr::bind_rows(
+        mc_AA_sel_overall_metrics %>% 
+            dplyr::mutate(selection="Yes", method="mc")) %>%
+  dplyr::bind_rows(
+        causalimpact_AA_overall_metrics %>% 
+            dplyr::mutate(selection="No", method="causalimp"))%>%
+    dplyr::bind_rows(
+        causalimpact_AA_sel_overall_metrics %>% 
+            dplyr::mutate(selection="Yes", method="causalimp")) %>%
+  dplyr::mutate(metric="rmse", metric_value=jackknife_rmse)%>%
+  dplyr::select(post_period_t,metric, method, selection, metric_value)
+
+bias_tib=gsynth_AA_bias %>% 
+  dplyr::mutate(selection="No", method="gsynth") %>%
+    dplyr::bind_rows(
+        gsynth_AA_sel_bias %>% 
+            dplyr::mutate(selection="Yes", method="gsynth")) %>%
+    dplyr::bind_rows(
+        scdid_AA_bias %>% 
+            dplyr::mutate(selection="No", method="scdid"))%>%
+    dplyr::bind_rows(
+        scdid_AA_sel_bias %>% 
+            dplyr::mutate(selection="Yes", method="scdid"))%>%
+    dplyr::bind_rows(
+        mc_AA_bias %>% 
+            dplyr::mutate(selection="No", method="mc"))%>%
+    dplyr::bind_rows(
+        mc_AA_sel_bias %>% 
+            dplyr::mutate(selection="Yes", method="mc")) %>%
+  dplyr::bind_rows(
+        causalimpact_AA_bias %>% 
+            dplyr::mutate(selection="No", method="causalimp"))%>%
+    dplyr::bind_rows(
+        causalimpact_AA_sel_bias %>% 
+            dplyr::mutate(selection="Yes", method="causalimp")) %>%
+  dplyr::mutate(metric="bias", metric_value=jackknife_abs_bias) %>%
+  dplyr::select(post_period_t, metric,metric_value, method, selection)
+
+#combine the metrics into one long form tibble, #spread the long form to wide
+metrics_tib=coverage_tib %>%
+  dplyr::bind_rows(rmse_tib) %>%
+  dplyr::bind_rows(bias_tib) %>%
+  pivot_wider(names_from = c( selection,method ), values_from=metric_value) %>%
+  dplyr::select(tidyselect::contains("No"), tidyselect::contains("Yes"),
+                dplyr::everything())
+
+#Alternatively, to group by method then selection
+ #pivot_wider(names_from = c( method, selection ), values_from=metric_value) 
+
+metrics_tib %>%
+  gt::gt(rowname_col = "post_period_t", groupname_col = "metric") %>%
+    gt::tab_header(
+        title = md("Metrics by Method"),
+        subtitle = md("Rho=0.1")
+    ) %>%
+    gt::tab_source_note(md("Notes:")) %>%
+   gt::tab_spanner_delim(delim = "_", columns=setdiff(names(metrics_tib), c("post_period_t", "metric") )) %>% 
+  tab_stubhead(label = "Selection") %>% 
+  gt::fmt_number(columns=dplyr::everything(), decimals = 3)
+
+```
+
+```{r low-acf-bias, echo=F, fig.show="hold", out.width="50%", fig.cap="Bias Estimates"}
+
+gsynth_sel_bias_plot
+
+scdid_AA_sel_bias_plot
+
+mc_AA_sel_bias_plot
+
+causalimpact_AA_sel_bias_plot
+
+```
+
+
+
+
+## DGP 3: High ACF, Loading Selection
+For our third DGP, we focus on the selection mechanism by reverting the ACF to 0.9 (as in DGP 1) and shifting the factor loadings distribution rather than the intercept. Specifically, after randomly assigning the treatment we assign the factor loadings as coming from either the same distribution ($\lambda_i\sim\beta(2, 2)$) (no selection) or different distributions (with overlap) 
+
+\begin{align*}
+\lambda_{i} \sim \begin{cases}
+\beta(2-0.75, 2) &D_{i}=0\\
+\beta(2, 2-0.75) &D_{i}=1.
+\end{cases}
+\end{align*}
+
+Coverage once again falls below the 95% nominal level, with performance dropping off quite drastically under this form of selection as compared to intercept selection. Without selection, the results should look much the same as under DGP 1, and they generally do.^[Question: Shouldn't they be identical, in fact? What could be happening?] Performance on RMSE actually looks somewhat better under loading selection compared to no selection, though the magnituide of the differences is again small. The estimators, however, are much more biased under this selection process -- as much as 50% worse in fact, but hovering closer to 20% or 30% typically. As in the first DGP, MC seems to perform better than the other methods across the metrics, and is reliably more robust to selection than the others to boot.
+
+
+```{r dgp-3, eval=FALSE}
+AA_data_no_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
+                                         first_treat="2017-07-01",
+                                         date_end="2020-01-01",
+                                         num_entries=200,
+                                         prop_treated=0.25,
+                                         treat_impact_sd = 0, 
+                                         treat_impact_mean = 0, 
+                                         rho=0.9,
+                                         rescale_y_mean = 2.5e3,
+                                         cov_overlap_scale = 0,
+                                         seed=42)
+
+AA_data_no_sel_unformatted=furrr::future_map(.x=seeds, 
+                                             .f=~noisify_draw(
+                                               data_inp=AA_data_no_sel_base,
+                                               seed=.x))
+
+
+AA_data_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
+                                      first_treat="2017-07-01",
+                                      date_end="2020-01-01",
+                                      num_entries=200,
+                                      prop_treated=0.25,
+                                      treat_impact_sd = 0, 
+                                      treat_impact_mean = 0, 
+                                      rho=0.9,
+                                      rescale_y_mean = 2.5e3,
+                                      cov_overlap_scale = 0,
+                                      loading_scale = 0.75,
+                                      seed=42)
+
+
+AA_data_sel_unformatted=furrr::future_map(.x=seeds, 
+                                          .f=~noisify_draw(
+                                            data_inp=AA_data_sel_base,
+                                            seed=.x))
+```
+
+```{r loadings-data-tab, echo=FALSE}
+load(here("Data/Cloud_AA_Loadings_50.RData"))
+#Create long form data for each metric
+coverage_tib=gsynth_AA_cov %>% 
+    dplyr::mutate(selection="No", method="gsynth") %>%
+    dplyr::bind_rows(
+        gsynth_AA_sel_cov %>% 
+            dplyr::mutate(selection="Yes", method="gsynth")) %>%
+    dplyr::bind_rows(
+        scdid_AA_cov %>% 
+            dplyr::mutate(selection="No", method="scdid"))%>%
+    dplyr::bind_rows(
+        scdid_AA_sel_cov %>% 
+            dplyr::mutate(selection="Yes", method="scdid"))%>%
+    dplyr::bind_rows(
+        mc_AA_cov %>% 
+            dplyr::mutate(selection="No", method="mc"))%>%
+    dplyr::bind_rows(
+        mc_AA_sel_cov %>% 
+            dplyr::mutate(selection="Yes", method="mc")) %>%
+  dplyr::bind_rows(
+        causalimpact_AA_cov %>% 
+            dplyr::mutate(selection="No", method="causalimp")) %>%
+  dplyr::bind_rows(
+        causalimpact_AA_sel_cov %>% 
+            dplyr::mutate(selection="Yes", method="causalimp")) %>%
+  dplyr::mutate(metric="coverage", metric_value=coverage_abs)%>%
+  dplyr::select(post_period_t,metric, method, selection, metric_value)
+
+
+
+rmse_tib=gsynth_overall_metrics %>% 
+  dplyr::mutate(selection="No", method="gsynth") %>%
+    dplyr::bind_rows(
+        gsynth_sel_overall_metrics %>% 
+            dplyr::mutate(selection="Yes", method="gsynth")) %>%
+    dplyr::bind_rows(
+        scdid_AA_overall_metrics %>% 
+            dplyr::mutate(selection="No", method="scdid"))%>%
+    dplyr::bind_rows(
+        scdid_AA_sel_overall_metrics %>% 
+            dplyr::mutate(selection="Yes", method="scdid"))%>%
+    dplyr::bind_rows(
+        mc_AA_overall_metrics %>% 
+            dplyr::mutate(selection="No", method="mc"))%>%
+    dplyr::bind_rows(
+        mc_AA_sel_overall_metrics %>% 
+            dplyr::mutate(selection="Yes", method="mc")) %>%
+  dplyr::bind_rows(
+        causalimpact_AA_overall_metrics %>% 
+            dplyr::mutate(selection="No", method="causalimp"))%>%
+    dplyr::bind_rows(
+        causalimpact_AA_sel_overall_metrics %>% 
+            dplyr::mutate(selection="Yes", method="causalimp")) %>%
+  dplyr::mutate(metric="rmse", metric_value=jackknife_rmse)%>%
+  dplyr::select(post_period_t,metric, method, selection, metric_value)
+
+bias_tib=gsynth_AA_bias %>% 
+  dplyr::mutate(selection="No", method="gsynth") %>%
+    dplyr::bind_rows(
+        gsynth_AA_sel_bias %>% 
+            dplyr::mutate(selection="Yes", method="gsynth")) %>%
+    dplyr::bind_rows(
+        scdid_AA_bias %>% 
+            dplyr::mutate(selection="No", method="scdid"))%>%
+    dplyr::bind_rows(
+        scdid_AA_sel_bias %>% 
+            dplyr::mutate(selection="Yes", method="scdid"))%>%
+    dplyr::bind_rows(
+        mc_AA_bias %>% 
+            dplyr::mutate(selection="No", method="mc"))%>%
+    dplyr::bind_rows(
+        mc_AA_sel_bias %>% 
+            dplyr::mutate(selection="Yes", method="mc")) %>%
+  dplyr::bind_rows(
+        causalimpact_AA_bias %>% 
+            dplyr::mutate(selection="No", method="causalimp"))%>%
+    dplyr::bind_rows(
+        causalimpact_AA_sel_bias %>% 
+            dplyr::mutate(selection="Yes", method="causalimp")) %>%
+  dplyr::mutate(metric="bias", metric_value=jackknife_abs_bias) %>%
+  dplyr::select(post_period_t, metric,metric_value, method, selection)
+
+#combine the metrics into one long form tibble, #spread the long form to wide
+metrics_tib=coverage_tib %>%
+  dplyr::bind_rows(rmse_tib) %>%
+  dplyr::bind_rows(bias_tib) %>%
+  pivot_wider(names_from = c( selection,method ), values_from=metric_value) %>%
+  dplyr::select(tidyselect::contains("No"), tidyselect::contains("Yes"),
+                dplyr::everything())
+
+#Alternatively, to group by method then selection
+ #pivot_wider(names_from = c( method, selection ), values_from=metric_value) 
+
+metrics_tib %>%
+  gt::gt(rowname_col = "post_period_t", groupname_col = "metric") %>%
+    gt::tab_header(
+        title = md("Metrics by Method"),
+        subtitle = md("Rho=0.9, Loading Shift")
+    ) %>%
+    gt::tab_source_note(md("Notes:")) %>%
+   gt::tab_spanner_delim(delim = "_", columns=setdiff(names(metrics_tib), c("post_period_t", "metric") )) %>% 
+  tab_stubhead(label = "Selection") %>% 
+  gt::fmt_number(columns=dplyr::everything(), decimals = 3)
+
+```
+
+```{r loadings-bias, echo=F, fig.show="hold", out.width="50%", fig.cap="Bias Estimates"}
+
+gsynth_sel_bias_plot
+
+scdid_AA_sel_bias_plot
+
+mc_AA_sel_bias_plot
+
+causalimpact_AA_sel_bias_plot
+
+```

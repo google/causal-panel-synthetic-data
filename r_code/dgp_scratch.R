@@ -780,3 +780,570 @@ aa_monthly_test2 %>%
 aa_monthly_test %>%
   group_by(period) %>%
   summarize(mean_cf = mean(counterfactual), agg_cf = sum(counterfactual))
+
+
+
+
+
+
+
+
+#Old benchmarking
+
+####################################################3
+#SELECTION VS NO SELECTION
+####################################################3
+
+tic("Starting DGP")
+AA_data_no_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
+                                         first_treat="2017-07-01",
+                                         date_end="2020-01-01",
+                                         num_entries=200,
+                                         prop_treated=0.25,
+                                         treat_impact_sd = 0, 
+                                         treat_impact_mean = 0, 
+                                         rho=0.9,
+                                         rescale_y_mean = 2.5e3,
+                                         cov_overlap_scale = 0,
+                                         seed=42)
+
+AA_data_no_sel_unformatted=furrr::future_map(.x=seeds, 
+                                             .f=~noisify_draw(data_inp=
+                                                                AA_data_no_sel_base,
+                                                              seed=.x))
+
+AA_data_no_sel=future_map(AA_data_no_sel_unformatted, format_for_est)
+toc()
+
+tic("Starting DGP, Selection")
+AA_data_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
+                                      first_treat="2017-07-01",
+                                      date_end="2020-01-01",
+                                      num_entries=200,
+                                      prop_treated=0.25,
+                                      treat_impact_sd = 0, 
+                                      treat_impact_mean = 0, 
+                                      rho=0.9,
+                                      rescale_y_mean = 2.5e3,
+                                      cov_overlap_scale = 0,
+                                      intercept_scale = 0.75,
+                                      seed=42)
+
+
+AA_data_sel_unformatted=furrr::future_map(.x=seeds, 
+                                          .f=~noisify_draw(data_inp=
+                                                             AA_data_sel_base,
+                                                           seed=.x))
+
+AA_data_sel=future_map(AA_data_sel_unformatted, format_for_est)
+toc()
+
+
+
+tic("Estimating Gsynth, Placebo, No Selection")
+gsynth_AA=future_map(AA_data_no_sel, estimate_gsynth_series, se_est=F)
+gsynth_tot_AA=future_map(gsynth_AA, compute_tot_se_jackknife, stat_in="mean")
+
+gsynth_AA_bias=compute_jackknife_bias(gsynth_tot_AA)
+gsynth_bias_plot=create_gap_ci_plot(gsynth_AA_bias, 
+                                    plot_title="Gsynth Rho=0.1, Bias", 
+                                    plot_x_lab="Post-Treat Time",
+                                    plot_y_lab="ATT Bias", pct_flag = F)
+gsynth_overall_metrics=compute_jackknife_metrics(gsynth_AA)
+gsynth_AA_tot_var=compute_tot_variance(gsynth_tot_AA)
+gsynth_AA_cov=compute_tot_coverage(gsynth_tot_AA)
+toc()
+
+
+
+tic("Estimating Gsynth, Placebo, Selection")
+gsynth_AA_sel=future_map(AA_data_sel, estimate_gsynth_series, se_est=F)
+gsynth_tot_AA_sel=future_map(gsynth_AA_sel, compute_tot_se_jackknife,
+                             stat_in="mean")
+
+gsynth_AA_sel_bias=compute_jackknife_bias(gsynth_tot_AA_sel)
+gsynth_sel_bias_plot=create_gap_ci_plot(gsynth_AA_sel_bias, 
+                                        plot_title="Gsynth w/Selection - Rho=0.1, Bias", 
+                                        plot_x_lab="Post-Treat Time",
+                                        plot_y_lab="ATT Bias", pct_flag = F)
+gsynth_sel_overall_metrics=compute_jackknife_metrics(gsynth_AA_sel)
+gsynth_sel_AA_tot_var=compute_tot_variance(gsynth_tot_AA_sel)
+gsynth_AA_sel_cov=compute_tot_coverage(gsynth_tot_AA_sel )
+toc()
+
+
+
+
+tic("Estimating SCDID")
+scdid_AA=future_map(AA_data_no_sel, estimate_scdid_series)
+scdid_tot_AA=future_map(scdid_AA, compute_tot_se_jackknife, stat_in="mean")
+
+scdid_AA_bias=compute_jackknife_bias(scdid_tot_AA)
+scdid_AA_bias_plot=create_gap_ci_plot(scdid_AA_bias, 
+                                      plot_title="SCDID Bias", 
+                                      plot_x_lab="Post-Treat Time",
+                                      plot_y_lab="ATT Bias", pct_flag = F)
+scdid_AA_overall_metrics=compute_jackknife_metrics(scdid_AA)
+scdid_AA_tot_var=compute_tot_variance(scdid_tot_AA)
+scdid_AA_cov=compute_tot_coverage(scdid_tot_AA)
+toc()
+
+tic("Estimating SCDID Sel")
+scdid_AA_sel=future_map(AA_data_sel, estimate_scdid_series)
+scdid_tot_AA_sel=future_map(scdid_AA_sel, compute_tot_se_jackknife, stat_in="mean")
+
+scdid_AA_sel_bias=compute_jackknife_bias(scdid_tot_AA_sel)
+scdid_AA_sel_bias_plot=create_gap_ci_plot(scdid_AA_sel_bias, 
+                                          plot_title="SCDID w/Selection - Bias", 
+                                          plot_x_lab="Post-Treat Time",
+                                          plot_y_lab="ATT Bias", pct_flag = F)
+scdid_AA_sel_overall_metrics=compute_jackknife_metrics(scdid_AA_sel)
+scdid_AA_sel_tot_var=compute_tot_variance(scdid_tot_AA_sel)
+scdid_AA_sel_cov=compute_tot_coverage(scdid_tot_AA_sel)
+toc()
+
+tic("Estimating MC")
+
+mc_AA=future_map(AA_data_no_sel, estimate_gsynth_series, se_est=F,
+                 estimator_type="mc")
+mc_tot_AA=future_map(mc_AA, compute_tot_se_jackknife, stat_in="mean")
+
+mc_AA_bias=compute_jackknife_bias(mc_tot_AA)
+mc_AA_bias_plot=create_gap_ci_plot(mc_AA_bias, 
+                                   plot_title="MC - Bias", 
+                                   plot_x_lab="Post-Treat Time",
+                                   plot_y_lab="ATT Bias",  pct_flag = F)
+mc_AA_overall_metrics=compute_jackknife_metrics(mc_AA)
+mc_AA_tot_var=compute_tot_variance(mc_tot_AA)
+mc_AA_cov=compute_tot_coverage(mc_tot_AA)
+toc()
+
+
+
+
+tic("Estimating MC sel")
+
+mc_AA_sel=future_map(AA_data_sel, estimate_gsynth_series, se_est=F,
+                     estimator_type="mc")
+mc_tot_AA_sel=future_map(mc_AA_sel, compute_tot_se_jackknife, stat_in="mean")
+
+mc_AA_sel_bias=compute_jackknife_bias(mc_tot_AA_sel)
+mc_AA_sel_bias_plot=create_gap_ci_plot(mc_AA_sel_bias, 
+                                       plot_title="MC w/Selection - Bias", 
+                                       plot_x_lab="Post-Treat Time",
+                                       plot_y_lab="ATT Bias",  pct_flag = F)
+mc_AA_sel_overall_metrics=compute_jackknife_metrics(mc_AA_sel)
+mc_AA_sel_tot_var=compute_tot_variance(mc_tot_AA_sel)
+mc_AA_sel_cov=compute_tot_coverage(mc_tot_AA_sel)
+toc()
+
+save.image(here("Data/Cloud_AA_50.RData"))
+
+
+
+
+
+
+
+
+####################################################3
+#SELECTION VS NO SELECTION LOW RHO
+####################################################3
+tic("Starting DGP")
+AA_data_no_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
+                                         first_treat="2017-07-01",
+                                         date_end="2020-01-01",
+                                         num_entries=200,
+                                         prop_treated=0.25,
+                                         treat_impact_sd = 0, 
+                                         treat_impact_mean = 0, 
+                                         rho=0.1,
+                                         rescale_y_mean = 2.5e3,
+                                         cov_overlap_scale = 0,
+                                         seed=42)
+
+AA_data_no_sel_unformatted=furrr::future_map(.x=seeds, 
+                                             .f=~noisify_draw(data_inp=
+                                                                AA_data_no_sel_base,
+                                                              seed=.x))
+
+AA_data_no_sel=future_map(AA_data_no_sel_unformatted, format_for_est)
+toc()
+
+tic("Starting DGP, Selection")
+AA_data_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
+                                      first_treat="2017-07-01",
+                                      date_end="2020-01-01",
+                                      num_entries=200,
+                                      prop_treated=0.25,
+                                      treat_impact_sd = 0, 
+                                      treat_impact_mean = 0, 
+                                      rho=0.1,
+                                      rescale_y_mean = 2.5e3,
+                                      cov_overlap_scale = 0,
+                                      intercept_scale = 0.75,
+                                      seed=42)
+
+
+AA_data_sel_unformatted=furrr::future_map(.x=seeds, 
+                                          .f=~noisify_draw(data_inp=
+                                                             AA_data_sel_base,
+                                                           seed=.x))
+
+AA_data_sel=future_map(AA_data_sel_unformatted, format_for_est)
+toc()
+
+
+
+tic("Estimating Gsynth, Placebo, No Selection")
+gsynth_AA=future_map(AA_data_no_sel, estimate_gsynth_series, se_est=F)
+gsynth_tot_AA=future_map(gsynth_AA, compute_tot_se_jackknife, stat_in="mean")
+
+gsynth_AA_bias=compute_jackknife_bias(gsynth_tot_AA)
+gsynth_bias_plot=create_gap_ci_plot(gsynth_AA_bias, 
+                                    plot_title="Gsynth Rho=0.1, Bias", 
+                                    plot_x_lab="Post-Treat Time",
+                                    plot_y_lab="ATT Bias", pct_flag = F)
+gsynth_overall_metrics=compute_jackknife_metrics(gsynth_AA)
+gsynth_AA_tot_var=compute_tot_variance(gsynth_tot_AA)
+gsynth_AA_cov=compute_tot_coverage(gsynth_tot_AA)
+toc()
+
+
+
+tic("Estimating Gsynth, Placebo, Selection")
+gsynth_AA_sel=future_map(AA_data_sel, estimate_gsynth_series, se_est=F)
+gsynth_tot_AA_sel=future_map(gsynth_AA_sel, compute_tot_se_jackknife,
+                             stat_in="mean")
+
+gsynth_AA_sel_bias=compute_jackknife_bias(gsynth_tot_AA_sel)
+gsynth_sel_bias_plot=create_gap_ci_plot(gsynth_AA_sel_bias, 
+                                        plot_title="Gsynth w/Selection - Rho=0.1, Bias", 
+                                        plot_x_lab="Post-Treat Time",
+                                        plot_y_lab="ATT Bias", pct_flag = F)
+gsynth_sel_overall_metrics=compute_jackknife_metrics(gsynth_AA_sel)
+gsynth_sel_AA_tot_var=compute_tot_variance(gsynth_tot_AA_sel)
+gsynth_AA_sel_cov=compute_tot_coverage(gsynth_tot_AA_sel )
+toc()
+
+
+
+
+tic("Estimating SCDID")
+scdid_AA=future_map(AA_data_no_sel, estimate_scdid_series)
+scdid_tot_AA=future_map(scdid_AA, compute_tot_se_jackknife, stat_in="mean")
+
+scdid_AA_bias=compute_jackknife_bias(scdid_tot_AA)
+scdid_AA_bias_plot=create_gap_ci_plot(scdid_AA_bias, 
+                                      plot_title="SCDID Rho=0.1, Bias", 
+                                      plot_x_lab="Post-Treat Time",
+                                      plot_y_lab="ATT Bias", pct_flag = F)
+scdid_AA_overall_metrics=compute_jackknife_metrics(scdid_AA)
+scdid_AA_tot_var=compute_tot_variance(scdid_tot_AA)
+scdid_AA_cov=compute_tot_coverage(scdid_tot_AA)
+toc()
+
+tic("Estimating SCDID Sel")
+scdid_AA_sel=future_map(AA_data_sel, estimate_scdid_series)
+scdid_tot_AA_sel=future_map(scdid_AA_sel, compute_tot_se_jackknife, stat_in="mean")
+
+scdid_AA_sel_bias=compute_jackknife_bias(scdid_tot_AA_sel)
+scdid_AA_sel_bias_plot=create_gap_ci_plot(scdid_AA_sel_bias, 
+                                          plot_title="SCDID w/Selection - Rho=0.1, Bias", 
+                                          plot_x_lab="Post-Treat Time",
+                                          plot_y_lab="ATT Bias", pct_flag = F)
+scdid_AA_sel_overall_metrics=compute_jackknife_metrics(scdid_AA_sel)
+scdid_AA_sel_tot_var=compute_tot_variance(scdid_tot_AA_sel)
+scdid_AA_sel_cov=compute_tot_coverage(scdid_tot_AA_sel)
+toc()
+
+tic("Estimating MC")
+
+mc_AA=future_map(AA_data_no_sel, estimate_gsynth_series, se_est=F,
+                 estimator_type="mc")
+mc_tot_AA=future_map(mc_AA, compute_tot_se_jackknife, stat_in="mean")
+
+mc_AA_bias=compute_jackknife_bias(mc_tot_AA)
+mc_AA_bias_plot=create_gap_ci_plot(mc_AA_bias, 
+                                   plot_title="MC - Rho=0.1, Bias", 
+                                   plot_x_lab="Post-Treat Time",
+                                   plot_y_lab="ATT Bias",  pct_flag = F)
+mc_AA_overall_metrics=compute_jackknife_metrics(mc_AA)
+mc_AA_tot_var=compute_tot_variance(mc_tot_AA)
+mc_AA_cov=compute_tot_coverage(mc_tot_AA)
+toc()
+
+
+
+
+tic("Estimating MC sel")
+
+mc_AA_sel=future_map(AA_data_sel, estimate_gsynth_series, se_est=F,
+                     estimator_type="mc")
+mc_tot_AA_sel=future_map(mc_AA_sel, compute_tot_se_jackknife, stat_in="mean")
+
+mc_AA_sel_bias=compute_jackknife_bias(mc_tot_AA_sel)
+mc_AA_sel_bias_plot=create_gap_ci_plot(mc_AA_sel_bias, 
+                                       plot_title="MC w/Selection - Rho=0.1, Bias", 
+                                       plot_x_lab="Post-Treat Time",
+                                       plot_y_lab="ATT Bias",  pct_flag = F)
+mc_AA_sel_overall_metrics=compute_jackknife_metrics(mc_AA_sel)
+mc_AA_sel_tot_var=compute_tot_variance(mc_tot_AA_sel)
+mc_AA_sel_cov=compute_tot_coverage(mc_tot_AA_sel)
+toc()
+
+save.image(here("Data/Cloud_AA_ACF_50.RData"))
+
+
+
+
+####################################################3
+#SELECTION VS NO SELECTION (ON LOADINGS)
+####################################################3
+tic("Starting DGP")
+AA_data_no_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
+                                         first_treat="2017-07-01",
+                                         date_end="2020-01-01",
+                                         num_entries=200,
+                                         prop_treated=0.25,
+                                         treat_impact_sd = 0, 
+                                         treat_impact_mean = 0, 
+                                         rho=0.9,
+                                         rescale_y_mean = 2.5e3,
+                                         cov_overlap_scale = 0,
+                                         seed=42)
+
+AA_data_no_sel_unformatted=furrr::future_map(.x=seeds, 
+                                             .f=~noisify_draw(data_inp=
+                                                                AA_data_no_sel_base,
+                                                              seed=.x))
+
+AA_data_no_sel=future_map(AA_data_no_sel_unformatted, format_for_est)
+toc()
+
+tic("Starting DGP, Selection")
+AA_data_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
+                                      first_treat="2017-07-01",
+                                      date_end="2020-01-01",
+                                      num_entries=200,
+                                      prop_treated=0.25,
+                                      treat_impact_sd = 0, 
+                                      treat_impact_mean = 0, 
+                                      rho=0.9,
+                                      rescale_y_mean = 2.5e3,
+                                      cov_overlap_scale = 0,
+                                      loading_scale = 0.75,
+                                      seed=42)
+
+
+AA_data_sel_unformatted=furrr::future_map(.x=seeds, 
+                                          .f=~noisify_draw(data_inp=
+                                                             AA_data_sel_base,
+                                                           seed=.x))
+
+AA_data_sel=future_map(AA_data_sel_unformatted, format_for_est)
+toc()
+
+
+
+tic("Estimating Gsynth, Placebo, No Selection")
+gsynth_AA=future_map(AA_data_no_sel, estimate_gsynth_series, se_est=F)
+gsynth_tot_AA=future_map(gsynth_AA, compute_tot_se_jackknife, stat_in="mean")
+
+gsynth_AA_bias=compute_jackknife_bias(gsynth_tot_AA)
+gsynth_bias_plot=create_gap_ci_plot(gsynth_AA_bias, 
+                                    plot_title="Gsynth, Bias", 
+                                    plot_x_lab="Post-Treat Time",
+                                    plot_y_lab="ATT Bias", pct_flag = F)
+gsynth_overall_metrics=compute_jackknife_metrics(gsynth_AA)
+gsynth_AA_tot_var=compute_tot_variance(gsynth_tot_AA)
+gsynth_AA_cov=compute_tot_coverage(gsynth_tot_AA)
+toc()
+
+
+
+tic("Estimating Gsynth, Placebo, Selection")
+gsynth_AA_sel=future_map(AA_data_sel, estimate_gsynth_series, se_est=F)
+gsynth_tot_AA_sel=future_map(gsynth_AA_sel, compute_tot_se_jackknife,
+                             stat_in="mean")
+
+gsynth_AA_sel_bias=compute_jackknife_bias(gsynth_tot_AA_sel)
+gsynth_sel_bias_plot=create_gap_ci_plot(gsynth_AA_sel_bias, 
+                                        plot_title="Gsynth w/Selection on Loadings, Bias", 
+                                        plot_x_lab="Post-Treat Time",
+                                        plot_y_lab="ATT Bias", pct_flag = F)
+gsynth_sel_overall_metrics=compute_jackknife_metrics(gsynth_AA_sel)
+gsynth_sel_AA_tot_var=compute_tot_variance(gsynth_tot_AA_sel)
+gsynth_AA_sel_cov=compute_tot_coverage(gsynth_tot_AA_sel )
+toc()
+
+
+
+
+tic("Estimating SCDID")
+scdid_AA=future_map(AA_data_no_sel, estimate_scdid_series)
+scdid_tot_AA=future_map(scdid_AA, compute_tot_se_jackknife, stat_in="mean")
+
+scdid_AA_bias=compute_jackknife_bias(scdid_tot_AA)
+scdid_AA_bias_plot=create_gap_ci_plot(scdid_AA_bias, 
+                                      plot_title="SCDID Bias", 
+                                      plot_x_lab="Post-Treat Time",
+                                      plot_y_lab="ATT Bias", pct_flag = F)
+scdid_AA_overall_metrics=compute_jackknife_metrics(scdid_AA)
+scdid_AA_tot_var=compute_tot_variance(scdid_tot_AA)
+scdid_AA_cov=compute_tot_coverage(scdid_tot_AA)
+toc()
+
+tic("Estimating SCDID Sel")
+scdid_AA_sel=future_map(AA_data_sel, estimate_scdid_series)
+scdid_tot_AA_sel=future_map(scdid_AA_sel, compute_tot_se_jackknife, stat_in="mean")
+
+scdid_AA_sel_bias=compute_jackknife_bias(scdid_tot_AA_sel)
+scdid_AA_sel_bias_plot=create_gap_ci_plot(scdid_AA_sel_bias, 
+                                          plot_title="SCDID w/Selection  on Loadings, Bias", 
+                                          plot_x_lab="Post-Treat Time",
+                                          plot_y_lab="ATT Bias", pct_flag = F)
+scdid_AA_sel_overall_metrics=compute_jackknife_metrics(scdid_AA_sel)
+scdid_AA_sel_tot_var=compute_tot_variance(scdid_tot_AA_sel)
+scdid_AA_sel_cov=compute_tot_coverage(scdid_tot_AA_sel)
+toc()
+
+tic("Estimating MC")
+
+mc_AA=future_map(AA_data_no_sel, estimate_gsynth_series, se_est=F,
+                 estimator_type="mc")
+mc_tot_AA=future_map(mc_AA, compute_tot_se_jackknife, stat_in="mean")
+
+mc_AA_bias=compute_jackknife_bias(mc_tot_AA)
+mc_AA_bias_plot=create_gap_ci_plot(mc_AA_bias, 
+                                   plot_title="MC Bias", 
+                                   plot_x_lab="Post-Treat Time",
+                                   plot_y_lab="ATT Bias",  pct_flag = F)
+mc_AA_overall_metrics=compute_jackknife_metrics(mc_AA)
+mc_AA_tot_var=compute_tot_variance(mc_tot_AA)
+mc_AA_cov=compute_tot_coverage(mc_tot_AA)
+toc()
+
+
+
+
+tic("Estimating MC sel")
+
+mc_AA_sel=future_map(AA_data_sel, estimate_gsynth_series, se_est=F,
+                     estimator_type="mc")
+mc_tot_AA_sel=future_map(mc_AA_sel, compute_tot_se_jackknife, stat_in="mean")
+
+mc_AA_sel_bias=compute_jackknife_bias(mc_tot_AA_sel)
+mc_AA_sel_bias_plot=create_gap_ci_plot(mc_AA_sel_bias, 
+                                       plot_title="MC w/Selection on Loadings, Bias", 
+                                       plot_x_lab="Post-Treat Time",
+                                       plot_y_lab="ATT Bias",  pct_flag = F)
+mc_AA_sel_overall_metrics=compute_jackknife_metrics(mc_AA_sel)
+mc_AA_sel_tot_var=compute_tot_variance(mc_tot_AA_sel)
+mc_AA_sel_cov=compute_tot_coverage(mc_tot_AA_sel)
+toc()
+
+save.image(here("Data/Cloud_AA_Loadings_50.RData"))
+
+
+
+#Load Data 1 (hi ACF), run CI
+load(here("Data/Cloud_AA_50.RData"))
+tic("Estimating CI 1")
+
+causalimpact_AA=future_map(AA_data_no_sel, estimate_causalimpact_series)
+causalimpact_tot_AA=future_map(causalimpact_AA, compute_tot_se_jackknife, stat_in="mean")
+
+causalimpact_AA_bias=compute_jackknife_bias(causalimpact_tot_AA)
+causalimpact_AA_bias_plot=create_gap_ci_plot(causalimpact_AA_bias, 
+                                             plot_title="Causal Impact Bias", 
+                                             plot_x_lab="Post-Treat Time",
+                                             plot_y_lab="ATT Bias",  pct_flag = F)
+causalimpact_AA_overall_metrics=compute_jackknife_metrics(causalimpact_AA)
+causalimpact_AA_tot_var=compute_tot_variance(causalimpact_tot_AA)
+causalimpact_AA_cov=compute_tot_coverage(causalimpact_tot_AA)
+toc()
+
+tic("Estimating CI 1, sel")
+
+causalimpact_AA_sel=future_map(AA_data_sel, estimate_causalimpact_series)
+causalimpact_tot_AA_sel=future_map(causalimpact_AA_sel, compute_tot_se_jackknife, stat_in="mean")
+
+causalimpact_AA_sel_bias=compute_jackknife_bias(causalimpact_tot_AA_sel)
+causalimpact_AA_sel_bias_plot=create_gap_ci_plot(causalimpact_AA_sel_bias, 
+                                                 plot_title="Causal Impact Bias", 
+                                                 plot_x_lab="Post-Treat Time",
+                                                 plot_y_lab="ATT Bias",  pct_flag = F)
+causalimpact_AA_sel_overall_metrics=compute_jackknife_metrics(causalimpact_AA_sel)
+causalimpact_AA_sel_tot_var=compute_tot_variance(causalimpact_tot_AA_sel)
+causalimpact_AA_sel_cov=compute_tot_coverage(causalimpact_tot_AA_sel)
+toc()
+save.image(here("Data/Cloud_AA_50_v2.RData"))
+
+
+#Load Data 2 (low acf)
+load(here("Data/Cloud_AA_ACF_50.RData"))
+tic("Estimating CI 2")
+
+causalimpact_AA=future_map(AA_data_no_sel, estimate_causalimpact_series)
+causalimpact_tot_AA=future_map(causalimpact_AA, compute_tot_se_jackknife, stat_in="mean")
+
+causalimpact_AA_bias=compute_jackknife_bias(causalimpact_tot_AA)
+causalimpact_AA_bias_plot=create_gap_ci_plot(causalimpact_AA_bias, 
+                                             plot_title="Causal Impact Bias", 
+                                             plot_x_lab="Post-Treat Time",
+                                             plot_y_lab="ATT Bias",  pct_flag = F)
+causalimpact_AA_overall_metrics=compute_jackknife_metrics(causalimpact_AA)
+causalimpact_AA_tot_var=compute_tot_variance(causalimpact_tot_AA)
+causalimpact_AA_cov=compute_tot_coverage(causalimpact_tot_AA)
+toc()
+
+tic("Estimating CI 2, sel")
+
+causalimpact_AA_sel=future_map(AA_data_sel, estimate_causalimpact_series)
+causalimpact_tot_AA_sel=future_map(causalimpact_AA_sel, compute_tot_se_jackknife, stat_in="mean")
+
+causalimpact_AA_sel_bias=compute_jackknife_bias(causalimpact_tot_AA_sel)
+causalimpact_AA_sel_bias_plot=create_gap_ci_plot(causalimpact_AA_sel_bias, 
+                                                 plot_title="Causal Impact Bias", 
+                                                 plot_x_lab="Post-Treat Time",
+                                                 plot_y_lab="ATT Bias",  pct_flag = F)
+causalimpact_AA_sel_overall_metrics=compute_jackknife_metrics(causalimpact_AA_sel)
+causalimpact_AA_sel_tot_var=compute_tot_variance(causalimpact_tot_AA_sel)
+causalimpact_AA_sel_cov=compute_tot_coverage(causalimpact_tot_AA_sel)
+toc()
+save.image(here("Data/Cloud_AA_ACF_50_v2.RData"))
+
+
+#Load Data 3 (loading selection)
+load(here("Data/Cloud_AA_Loadings_50.RData"))
+tic("Estimating CI 3")
+
+causalimpact_AA=future_map(AA_data_no_sel, estimate_causalimpact_series)
+causalimpact_tot_AA=future_map(causalimpact_AA, compute_tot_se_jackknife, stat_in="mean")
+
+causalimpact_AA_bias=compute_jackknife_bias(causalimpact_tot_AA)
+causalimpact_AA_bias_plot=create_gap_ci_plot(causalimpact_AA_bias, 
+                                             plot_title="Causal Impact Bias", 
+                                             plot_x_lab="Post-Treat Time",
+                                             plot_y_lab="ATT Bias",  pct_flag = F)
+causalimpact_AA_overall_metrics=compute_jackknife_metrics(causalimpact_AA)
+causalimpact_AA_tot_var=compute_tot_variance(causalimpact_tot_AA)
+causalimpact_AA_cov=compute_tot_coverage(causalimpact_tot_AA)
+toc()
+
+tic("Estimating CI 3, sel")
+
+causalimpact_AA_sel=future_map(AA_data_sel, estimate_causalimpact_series)
+causalimpact_tot_AA_sel=future_map(causalimpact_AA_sel, compute_tot_se_jackknife, stat_in="mean")
+
+causalimpact_AA_sel_bias=compute_jackknife_bias(causalimpact_tot_AA_sel)
+causalimpact_AA_sel_bias_plot=create_gap_ci_plot(causalimpact_AA_sel_bias, 
+                                                 plot_title="Causal Impact Bias", 
+                                                 plot_x_lab="Post-Treat Time",
+                                                 plot_y_lab="ATT Bias",  pct_flag = F)
+causalimpact_AA_sel_overall_metrics=compute_jackknife_metrics(causalimpact_AA_sel)
+causalimpact_AA_sel_tot_var=compute_tot_variance(causalimpact_tot_AA_sel)
+causalimpact_AA_sel_cov=compute_tot_coverage(causalimpact_tot_AA_sel)
+toc()
+save.image(here("Data/Cloud_AA_Loadings_50_v2.RData"))

@@ -66,8 +66,7 @@ factor_synthetic_dgp<-function(num_entries=2000,
   #   and <0 shift control mean above the treatment mean.
   #conditional_impact_het: constant added to the treatment impact for top 25%
   #   and subtracted from bottom 25% of counterfactual y at time 1.
-  #log_output: boolean to determine whether output is log scale or exp
-  #seed: random number seed
+  #rescale_y_mean: number representing the target mean of exp(counterfactual)
   
   
   
@@ -168,10 +167,10 @@ factor_synthetic_dgp<-function(num_entries=2000,
 noisify_draw<-function(data_inp, seed,log_output=T, sig_y=1){
   set.seed(seed)
   eps=stats::rnorm(nrow(data_inp), sd=sig_y)
-  data_inp %>%
+  return(data_inp %>%
     dplyr::mutate(y=exp(y+eps)*(1- log_output)+log_output*(y+eps),
                   y0=exp(y0+eps)*(1- log_output)+log_output*(y0+eps),
-                  y1=exp(y1+eps)*(1- log_output)+log_output*(y1+eps)) 
+                  y1=exp(y1+eps)*(1- log_output)+log_output*(y1+eps)))
 }
 
 
@@ -195,7 +194,6 @@ compute_factor_loadings <- function(data_inp){
 
 
 
-#TODO(alexdkellogg): check with AP about 0 noise AR for y
 compute_outcome_process<-function(data_inp,num_periods_inp){
   #create a list of AR models, with individual specific noise and autocorr
   ar_param_inp=data_inp %>%
