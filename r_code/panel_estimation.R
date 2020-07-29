@@ -171,7 +171,7 @@ estimate_causalimpact_series <- function(data_full,
 # Potential Improvement: can I use ... as an argument so that any other gsynth arguments (ex, k=5) can be passed? right now, no way to do that for user
 estimate_gsynth_series <- function(data_full, id_var = "entry", time_var = "period", treat_indicator = "treatperiod_0", outcome_var = "target", x_in = NULL,
                                    counterfac_var = "counter_factual", se_est = TRUE, num_boots = 1000, inference_type = "parametric",
-                                   factor_range = c(0, 5), force_fe = "two-way", cross_val = TRUE,
+                                   factor_range = c(0, 5), force_fe = "unit", cross_val = TRUE,
                                    em_flag = FALSE, estimator_type = "ife",
                                    parallel_boot = FALSE, normalize_flag=F) {
   # Estimates Gsynth treatment effects given a long form data set, outputting a dataframe
