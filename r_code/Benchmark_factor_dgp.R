@@ -231,11 +231,11 @@ ab_dgp_params<-list(
     rescale_y_mean = 2.5e3,
     loading_scale = 0,
     seed=42 
-  ),
+  )
 )
 
 
-list_of_dgps=aa_dgp_params
+list_of_dgps=ab_dgp_params
 for(i in seq_len(length(list_of_dgps))){
   tic("Starting DGP")
   data_requested=do.call(factor_synthetic_dgp,list_of_dgps[[i]])
@@ -260,7 +260,7 @@ for(i in seq_len(length(list_of_dgps))){
   gsynth_tot_var=compute_tot_variance(gsynth_tot)
   gsynth_coverage=compute_tot_coverage(gsynth_tot)
   toc()
-  
+
   tic("Estimating SCDID")
   scdid_est=future_map(formatted_data, estimate_scdid_series)
   scdid_tot=future_map(scdid_est, compute_tot_se_jackknife, stat_in="mean")
@@ -304,7 +304,7 @@ for(i in seq_len(length(list_of_dgps))){
   causalimpact_coverage=compute_tot_coverage(causalimpact_tot)
   toc()
   
-  save.image(here::here(paste("Data/",names(list_of_dgps)[i],".Rdata",sep = "")))
+  save.image(here::here(paste("Data/",names(list_of_dgps)[i],".RData",sep = "")))
   #save.image(here::here(paste("Data/",glue::glue("Data{i}.RData"),sep = "")))
 }
 
