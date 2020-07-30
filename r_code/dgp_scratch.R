@@ -793,7 +793,7 @@ aa_monthly_test %>%
 ####################################################3
 #SELECTION VS NO SELECTION
 ####################################################3
-
+seeds=c(1,2)
 tic("Starting DGP")
 AA_data_no_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
                                          first_treat="2017-07-01",
@@ -841,7 +841,7 @@ toc()
 
 
 tic("Estimating Gsynth, Placebo, No Selection")
-gsynth_AA=future_map(AA_data_no_sel, estimate_gsynth_series, se_est=F)
+gsynth_AA=future_map(AA_data_no_sel, estimate_gsynth_series, se=F)
 gsynth_tot_AA=future_map(gsynth_AA, compute_tot_se_jackknife, stat_in="mean")
 
 gsynth_AA_bias=compute_jackknife_bias(gsynth_tot_AA)
@@ -949,6 +949,7 @@ save.image(here("Data/Cloud_AA_50.RData"))
 ####################################################3
 #SELECTION VS NO SELECTION LOW RHO
 ####################################################3
+seeds=c(1,2)
 tic("Starting DGP")
 AA_data_no_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
                                          first_treat="2017-07-01",
@@ -996,7 +997,7 @@ toc()
 
 
 tic("Estimating Gsynth, Placebo, No Selection")
-gsynth_AA=future_map(AA_data_no_sel, estimate_gsynth_series, se_est=F)
+gsynth_AA=future_map(AA_data_no_sel, estimate_gsynth_series, se=F, criterion="pc")
 gsynth_tot_AA=future_map(gsynth_AA, compute_tot_se_jackknife, stat_in="mean")
 
 gsynth_AA_bias=compute_jackknife_bias(gsynth_tot_AA)

@@ -170,10 +170,7 @@ estimate_causalimpact_series <- function(data_full,
 
 # Potential Improvement: can I use ... as an argument so that any other gsynth arguments (ex, k=5) can be passed? right now, no way to do that for user
 estimate_gsynth_series <- function(data_full, id_var = "entry", time_var = "period", treat_indicator = "treatperiod_0", outcome_var = "target", x_in = NULL,
-                                   counterfac_var = "counter_factual", se_est = TRUE, num_boots = 1000, inference_type = "parametric",
-                                   factor_range = c(0, 5), force_fe = "unit", cross_val = TRUE,
-                                   em_flag = FALSE, estimator_type = "ife",
-                                   parallel_boot = FALSE, normalize_flag=F) {
+                                   counterfac_var = "counter_factual", ...) {
   # Estimates Gsynth treatment effects given a long form data set, outputting a dataframe
   # consisting of a series of treatments effects for each id_var by time_var in all periods
   
@@ -186,15 +183,7 @@ estimate_gsynth_series <- function(data_full, id_var = "entry", time_var = "peri
   # x_in: time-varying covariates
   # note: a panel reg formula is implicitly defined as outcome_var~treat_indicator+x_in
   # for the remaining parameters, these are options into Gsynth (use ?gsynth for info)
-  # se_est: boolean as to whether uncertainty estimates are provided/estimated
-  # num_boots: number of bootstraps run to obtain SE estimates (only applies if se_est=TRUE)
-  # inference_type: string -- can be parametric, non-parametric, or jackknife. Parametric is recommended if treatment units are few (approx 40).
-  # factor_range: the sequence of unobservable factors to estimate, selected by cross-validation if cross_val=TRUE
-  # force_fe: string (unit, time, two-way, none) indicating the type of fixed effects to estimate
-  # cross_val: indicate whether to use cross validation to select the optimal number of factors (or the hyperparameter if matrix completion)
-  # em_flag: boolean indicating whether EM aglorithm from (Gobillon and Magnac 2016) is to be used for estimating factors
-  # estimator_type: string controlling the estimation method -- either Interactive Fixed Effects "ife" or Matrix Completion ("mc")
-  # parallel_boot: boolean for whether parallel computing is to be used for bootstrap/se. (FAILS FOR ME....)
+  
   
   # Higher level description of data_full:
   # rows of the df represent period-entry combinations (eg N (total num of entry) rows for period t).
@@ -207,14 +196,18 @@ estimate_gsynth_series <- function(data_full, id_var = "entry", time_var = "peri
   
   # estimate the panel SCM
   gsynth_agg_te_all_t <- gsynth::gsynth(
-    Y = outcome_var, D = treat_indicator, data = data_full, index = c(id_var, time_var), X = x_in,
-    se = se_est, nboots = num_boots, inference = inference_type, r = factor_range, force = force_fe, CV = cross_val,
-    EM = em_flag, estimator = estimator_type, parallel = parallel_boot, normalize = normalize_flag
+    Y = outcome_var, D = treat_indicator, data = data_full, 
+    index = c(id_var, time_var), X = x_in, ...
   )
   
+  unnamed_args=list(...)
+  #default in gsynth is F
+  se=ifelse(is.null(unnamed_args$se), F,unnamed_args$se )
+  #Default in GSynth is nonparametric
+  inference=ifelse(is.null(unnamed_args$inference),
+                   "nonparametric",unnamed_args$inference )
   
-  
-  if (se_est & inference_type == "parametric") {
+  if (se & inference == "parametric") {
     # gets all indiv effects for all T
     # renames the multi-d array output so that we can more easily pivot it
     gsynth_indiv_te_series <- gsynth_agg_te_all_t$est.ind[, , 1:(gsynth_agg_te_all_t$Ntr)] %>%

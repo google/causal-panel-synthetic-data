@@ -1,11 +1,11 @@
 pacman::p_load(dplyr, furrr,here,tictoc)
 
-source(here("r_code/factor_dgp.R"))
-source(here("r_code/panel_estimation.R"))
-source(here("r_code/analysis_metrics.R"))
-source(here("r_code/analysis_visualizations.R"))
-source(here("r_code/treatment_effect_bootstrap.R"))
-source(here("r_code/seed_metrics.R"))
+source(here::here("r_code/factor_dgp.R"))
+source(here::here("r_code/panel_estimation.R"))
+source(here::here("r_code/analysis_metrics.R"))
+source(here::here("r_code/analysis_visualizations.R"))
+source(here::here("r_code/treatment_effect_bootstrap.R"))
+source(here::here("r_code/seed_metrics.R"))
 plan(multiprocess, workers=availableCores()-1)
 set.seed(1982)
 n_seeds <- 50
@@ -105,6 +105,135 @@ aa_dgp_params<-list(
   )
 )
 
+ab_dgp_params<-list(
+  "ab_no_het"=list(
+    date_start="2010-01-01",
+    first_treat="2017-07-01",
+    date_end="2020-01-01",
+    num_entries=200,
+    prop_treated=0.25,
+    treat_impact_sd = 0, 
+    treat_impact_mean = 0.1,
+    treat_decay_mean=0.7,
+    treat_decay_sd=0,
+    rho=0.75,
+    num_factors=4,
+    rescale_y_mean = 2.5e3,
+    cov_overlap_scale = 0,
+    seed=42 ),
+  "ab_no_het_loading_shift"=list(
+    date_start="2010-01-01",
+    first_treat="2017-07-01",
+    date_end="2020-01-01",
+    num_entries=200,
+    prop_treated=0.25,
+    treat_impact_sd = 0, 
+    treat_impact_mean = 0.1,
+    treat_decay_mean=0.7,
+    treat_decay_sd=0,
+    rho=0.75,
+    num_factors=4,
+    rescale_y_mean = 2.5e3,
+    loading_scale = 0.75,
+    seed=42 ),
+  "ab_impact_het_loading_shift"=list(
+    date_start="2010-01-01",
+    first_treat="2017-07-01",
+    date_end="2020-01-01",
+    num_entries=200,
+    prop_treated=0.25,
+    treat_impact_sd = 0.1, 
+    treat_impact_mean = 0.1,
+    treat_decay_mean=0.7,
+    treat_decay_sd=0,
+    rho=0.75,
+    num_factors=4,
+    rescale_y_mean = 2.5e3,
+    loading_scale = 0.75,
+    seed=42 
+  ),
+  "ab_decay_het_loading_shift"=list(
+    date_start="2010-01-01",
+    first_treat="2017-07-01",
+    date_end="2020-01-01",
+    num_entries=200,
+    prop_treated=0.25,
+    treat_impact_sd = 0, 
+    treat_impact_mean = 0.1,
+    treat_decay_mean=0.7,
+    treat_decay_sd=0.1,
+    rho=0.75,
+    num_factors=4,
+    rescale_y_mean = 2.5e3,
+    loading_scale = 0.75,
+    seed=42 
+  ),
+  "ab_decay_impact_het_loading_shift"=list(
+    date_start="2010-01-01",
+    first_treat="2017-07-01",
+    date_end="2020-01-01",
+    num_entries=200,
+    prop_treated=0.25,
+    treat_impact_sd = 0, 
+    treat_impact_mean = 0.1,
+    treat_decay_mean=0.7,
+    treat_decay_sd=0.1,
+    rho=0.75,
+    num_factors=4,
+    rescale_y_mean = 2.5e3,
+    loading_scale = 0.75,
+    seed=42 
+  ),
+  "ab_impact_het"=list(
+    date_start="2010-01-01",
+    first_treat="2017-07-01",
+    date_end="2020-01-01",
+    num_entries=200,
+    prop_treated=0.25,
+    treat_impact_sd = 0.1, 
+    treat_impact_mean = 0.1,
+    treat_decay_mean=0.7,
+    treat_decay_sd=0,
+    rho=0.75,
+    num_factors=4,
+    rescale_y_mean = 2.5e3,
+    loading_scale = 0,
+    seed=42 
+  ),
+  "ab_decay_het"=list(
+    date_start="2010-01-01",
+    first_treat="2017-07-01",
+    date_end="2020-01-01",
+    num_entries=200,
+    prop_treated=0.25,
+    treat_impact_sd = 0, 
+    treat_impact_mean = 0.1,
+    treat_decay_mean=0.7,
+    treat_decay_sd=0.1,
+    rho=0.75,
+    num_factors=4,
+    rescale_y_mean = 2.5e3,
+    loading_scale = 0,
+    seed=42 
+  ),
+  "ab_decay_impact_het"=list(
+    date_start="2010-01-01",
+    first_treat="2017-07-01",
+    date_end="2020-01-01",
+    num_entries=200,
+    prop_treated=0.25,
+    treat_impact_sd = 0, 
+    treat_impact_mean = 0.1,
+    treat_decay_mean=0.7,
+    treat_decay_sd=0.1,
+    rho=0.75,
+    num_factors=4,
+    rescale_y_mean = 2.5e3,
+    loading_scale = 0,
+    seed=42 
+  ),
+)
+
 
 list_of_dgps=aa_dgp_params
 for(i in seq_len(length(list_of_dgps))){
@@ -119,7 +248,7 @@ for(i in seq_len(length(list_of_dgps))){
   
   
   tic("Estimating Gsynth")
-  gsynth_est=future_map(formatted_data, estimate_gsynth_series, se_est=F)
+  gsynth_est=future_map(formatted_data, estimate_gsynth_series, se=F)
   gsynth_tot=future_map(gsynth_est, compute_tot_se_jackknife, stat_in="mean")
   
   gsynth_bias=compute_jackknife_bias(gsynth_tot)
@@ -147,8 +276,8 @@ for(i in seq_len(length(list_of_dgps))){
   toc()
 
   tic("Estimating MC")
-  mc_est=future_map(formatted_data, estimate_gsynth_series, se_est=F,
-                   estimator_type="mc")
+  mc_est=future_map(formatted_data, estimate_gsynth_series, se=F,
+                   estimator="mc")
   mc_tot=future_map(mc_est, compute_tot_se_jackknife, stat_in="mean")
 
   mc_bias=compute_jackknife_bias(mc_tot)
@@ -175,8 +304,8 @@ for(i in seq_len(length(list_of_dgps))){
   causalimpact_coverage=compute_tot_coverage(causalimpact_tot)
   toc()
   
-  save.image(here(paste("Data/",names(list_of_dgps)[i],".Rdata",sep = "")))
-  #save.image(here(paste("Data/",glue::glue("Data{i}.RData"),sep = "")))
+  save.image(here::here(paste("Data/",names(list_of_dgps)[i],".Rdata",sep = "")))
+  #save.image(here::here(paste("Data/",glue::glue("Data{i}.RData"),sep = "")))
 }
 
 
