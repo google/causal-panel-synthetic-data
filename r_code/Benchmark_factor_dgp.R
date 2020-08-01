@@ -11,7 +11,7 @@ source(here::here("r_code/ensemble_estimators.R"))
 source(here::here("r_code/placebo_creation.R"))
 plan(multiprocess, workers=availableCores()-1)
 set.seed(1982)
-n_seeds <- 2
+n_seeds <- 50
 seeds <- sample(1000:9999, size = n_seeds)
 
 options(future.globals.maxSize= 891289600) #850mb=850*1024^2
@@ -271,7 +271,7 @@ ab_dgp_params<-list(
 
 
 #TODO(alexdkellogg): doing double the work (calling tot on post and all periods)
-list_of_dgps=ab_dgp_params[3]
+list_of_dgps=c(aa_dgp_params,ab_dgp_params)[3]
 for(i in seq_len(length(list_of_dgps))){
   tic("Starting DGP")
   data_requested=do.call(factor_synthetic_dgp,list_of_dgps[[i]])
@@ -350,6 +350,7 @@ for(i in seq_len(length(list_of_dgps))){
   toc()
   
   #For ensemble -- create an AA version of the data, estimate weights, apply
+  tic("Estimating Ensemble")
   placebo_data=furrr::future_map(formatted_data, create_placebo_df)
   gsynth_placebo_est=furrr::future_map(placebo_data, estimate_gsynth_series, se=F)
   scdid_placebo_est=furrr::future_map(placebo_data, estimate_scdid_series)
@@ -376,9 +377,9 @@ for(i in seq_len(length(list_of_dgps))){
   ensemble_overall_metrics=compute_jackknife_metrics(ensemble_est)
   ensemble_tot_var=compute_tot_variance(ensemble_tot)
   ensemble_coverage=compute_tot_coverage(ensemble_tot)
+  toc()
   
-  
-  #save.image(here::here(paste("Data/",names(list_of_dgps)[i],".RData",sep = "")))
+  save.image(here::here(paste("Data/",names(list_of_dgps)[i],".RData",sep = "")))
   #save.image(here::here(paste("Data/",glue::glue("Data{i}.RData"),sep = "")))
 }
 

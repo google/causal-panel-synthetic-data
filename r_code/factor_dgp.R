@@ -709,3 +709,48 @@ format_for_est<-function(data_ouput){
   
 }
 
+
+#Aggregate per week, month, quarter grouping by year/month/week, year/month, year/Quarter (quarter())
+aggregate_data_by_date<-function(disagg_data, to="monthly", from="daily",
+                                 id_var="entry", time_var="period"){
+  date_levels=factor(c("daily", "weekly", "monthly", "yearly"), ordered = T, levels =c("daily", "weekly", "monthly", "yearly") )
+  #if no aggregation is happening, break
+  stopifnot(match.arg(to,date_levels)>match.arg(from,date_levels))
+  
+  agg_ids=c("day_num", "week_num", "month_num", "year_num")
+  
+  #Identify the larger dates
+  to_ind=match(to,date_levels)
+  to_vars=agg_ids[seq(to_ind, length(agg_ids))]
+  
+  disagg_data=disagg_data %>% dplyr::mutate(period=time)
+  
+  new_date_name=paste0(to, "_date_end", sep="")
+  agg_data=disagg_data %>%
+    dplyr::mutate(treatperiod_0=(treated==1)*(post_treat_t >=0)) %>%
+    dplyr::group_by_at(c(id_var,to_vars)) %>%
+    summarise(y0=sum(y0), y1=sum(y1), y=sum(y),
+              !!as.name(new_date_name):=max(date_t),
+              treatperiod_0=max(treatperiod_0)
+    ) %>% dplyr::ungroup() 
+  
+  agg_data=agg_data %>% 
+    dplyr::mutate(period=agg_data %>% dplyr::group_by_at(to_vars) %>% dplyr::select(tidyselect::all_of(to_vars)) %>% dplyr::group_indices()) 
+  
+  agg_data_covariates=agg_data %>% dplyr::inner_join(
+    disagg_data %>% dplyr::select(-c(period, date_t, treatment_period,  
+                                     post_treat_t, time,
+                                      setdiff(agg_ids,to_vars),
+                                     y0,y1, y)) %>%
+      distinct_at(c("entry",to_vars), .keep_all = T), 
+    by=c(id_var, to_vars)
+  ) %>% dplyr::group_by(!!as.name(id_var)) %>%
+    dplyr::mutate(Treatment_Period=case_when(
+      treated==0~NA_real_,
+      treated==1~(length(treatperiod_0)-sum(treatperiod_0)+1)
+    ),
+    post_treat_t=period-Treatment_Period) %>% dplyr::ungroup()
+  
+  return(agg_data_covariates)
+  
+}
