@@ -1,26 +1,8 @@
-library(CausalImpact)
-library(Matrix)
-library(tsfeatures)
-library(tsibble)
-library(ggfortify)
-library(gsynth)
-library(augsynth)
-library(tidyr)
-library(panelView)
-library(synthdid)
-library(resample)
-library(mvtnorm)
-library(janitor)
-library("qpcR")
-library(dplyr)
-library(furrr)
-library(gridExtra)
-library(quadprog)
-library(rstatix)
-library(ForecastComb)
+pacman::p_load(dplyr, ggplot2, quadprog)
 
 # lots of edits:
-# Fix: Include additional weight selection methods? How about adopting the SCDID code and doing double SCDID?
+# TODO(alexdkellogg): Include additional weight selection methods? How about adopting the SCDID code and doing double SCDID?
+
 ensemble_placebo_weights <- function(method1_estimated_df, method2_estimated_df, method3_estimated_df, method4_estimated_df,
                                      time_var = "period", id_var = "entry", treat_time_var = "Treatment_Period",
                                      pred_var = "point.pred", counterfac_var = "counter_factual",
@@ -47,7 +29,6 @@ ensemble_placebo_weights <- function(method1_estimated_df, method2_estimated_df,
   
   # Output
   # weights, as a 4x1 (num methods X 1) vector, from an unconstrained linear reg
-  
   combined_methods_df <- method1_estimated_df %>%
     dplyr::select(
       !!as.name(time_var), !!as.name(id_var), !!as.name(treat_time_var),
@@ -76,12 +57,11 @@ ensemble_placebo_weights <- function(method1_estimated_df, method2_estimated_df,
   # Find the weights of the three methods that best fit the data in the post period
   # For now, we do this with simple linear regression and no constraints
   post_treat_combined_df <- combined_methods_df %>% filter(!!as.name(time_var) >= !!as.name(treat_time_var))
-  
   x=as.matrix(cbind(
-    combined_methods_df %>% pull(m1_pred),
-    combined_methods_df %>% pull(m2_pred),
-    combined_methods_df %>% pull(m3_pred),
-    combined_methods_df %>% pull(m4_pred)
+    post_treat_combined_df %>% pull(m1_pred),
+    post_treat_combined_df %>% pull(m2_pred),
+    post_treat_combined_df %>% pull(m3_pred),
+    post_treat_combined_df %>% pull(m4_pred)
   ))
   
   if(intercept_allowed) x=cbind(1,x)
@@ -93,7 +73,7 @@ ensemble_placebo_weights <- function(method1_estimated_df, method2_estimated_df,
   if(intercept_allowed) c=t(cbind(0, rbind(1, diag(4))))
   
   b <- c(1, rep(0, 4))
-  d <- t(combined_methods_df %>% pull(!!as.name(counterfac_var))) %*% x
+  d <- t(post_treat_combined_df %>% pull(!!as.name(counterfac_var))) %*% x
   nn2 <- sqrt(norm(d, "2"))
   
   
@@ -143,9 +123,7 @@ ensembled_predictor <- function(method1_estimated_df, method2_estimated_df, meth
             method2_estimated_df %>% pull(!!as.name(pred_var)),
             method3_estimated_df %>% pull(!!as.name(pred_var)),
             method4_estimated_df %>% pull(!!as.name(pred_var))
-          )
-        ) %*% est_weights)
-      ) %>%
+          ) ) %*% est_weights) ) %>%
       mutate(point.effect = !!as.name(outcome_var) - point.pred)
   }
   # if we have our 4 methods + intercept

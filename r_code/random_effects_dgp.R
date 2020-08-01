@@ -17,24 +17,24 @@ helper_gen_xs<-function(N_input){
                      -4.8,  9,    9),3,3)
   vs_all <- MASS::mvrnorm(n = N_input, rep(0, 3), Sigma)
   vs <- vs_all[,1:2]
-  v3 <- rbeta(n = N_input,
+  v3 <- stats::rbeta(n = N_input,
               shape1 = 2,
               shape2 = 2)
-  v4 <- rbinom(n = N_input, size = 10, prob = 0.2)
-  v5 <- matrix(rnorm(N_input * 20), N_input, 20)
+  v4 <- stats::rbinom(n = N_input, size = 10, prob = 0.2)
+  v5 <- matrix(stats::rnorm(N_input * 20), N_input, 20)
   xs <- cbind(vs, v3, v4, v5)
   colnames(xs) <- glue::glue("v{1:24}")
   
   unobs_corr=vs_all[,3]
-  unobs_rand1=rbeta(n = N_input,
+  unobs_rand1=stats::rbeta(n = N_input,
                    shape1 = 2,
                    shape2 = 2)
-  unobs_rand2=rbinom(n = N_input, size = 10, prob = 0.2)
+  unobs_rand2=stats::rbinom(n = N_input, size = 10, prob = 0.2)
   unobs_xs=cbind(unobs_corr,unobs_rand1,unobs_rand2 )
   colnames(unobs_xs) <- glue::glue("unobs_v{1:3}")
   
-  xs <- as_tibble(cbind(xs, unobs_xs)) %>%
-    mutate(division_country = 1:N_input)
+  xs <- tibble::as_tibble(cbind(xs, unobs_xs)) %>%
+    dplyr::mutate(division_country = 1:N_input)
 
     return(xs)
 }
@@ -93,7 +93,7 @@ helper_assign_treat<-function(covariate_inp,unobs_inp, type_inp, N_inp, prop_tre
     #if randome assignment of treatment
     #create a tibble with N rows (one per unit)
     #and sample treatment (0 if never, 1 if ever) using argument prop_treated
-     return( tibble(
+     return( tibble::tibble(
       division_country = 1:N_inp,
       treated = sample(
         x = c(0, 1),
@@ -105,7 +105,7 @@ helper_assign_treat<-function(covariate_inp,unobs_inp, type_inp, N_inp, prop_tre
     #select a subset of the variables (v1,3,5,6,8,9,11,12,13,14,16,18,22,23) -- why these (ask ignacio)?
     #and store them in a matrix
     z <- covariate_inp %>%
-      select(-v2,
+      dplyr::select(-v2,
              -v4,-v7,
              -v10,
              -v15,
@@ -120,7 +120,7 @@ helper_assign_treat<-function(covariate_inp,unobs_inp, type_inp, N_inp, prop_tre
     
     
     #draw a vec of standard normal rvs, with length of the num of variables in z
-    beta <- rnorm(n = ncol(z),
+    beta <- stats::rnorm(n = ncol(z),
                   mean = 0,
                   sd = 1)
     #compute the "z_hat" by multiplying the variables for each invidual by their beta
@@ -130,18 +130,18 @@ helper_assign_treat<-function(covariate_inp,unobs_inp, type_inp, N_inp, prop_tre
     colnames(zbeta) <- 'zbeta'
     #zbeta can range from negative to positive, so we rescale it using the
     #logistic function to map it into the probability space (0,1)
-    p <- zbeta %>% as_tibble() %>%
-      mutate(p = 1 / (1 + exp(zbeta)))
+    p <- zbeta %>% tibble::as_tibble() %>%
+      dplyr::mutate(p = 1 / (1 + exp(zbeta)))
     
     #Ask ignacio: could we just take the top "prop_treated" from the logistic transformation above?
     #or, to have more randomness, subtract a random uniform from each and take the top frac?
-    return( p %>% ungroup() %>%
-      mutate(
+    return( p %>% dplyr::ungroup() %>%
+      dplyr::mutate(
         u = runif(n = N_inp, min = 0, max = 1),
         p_new = p+u,
         treated=as.numeric(percent_rank(p_new)>1-prop_treated_inp),
         division_country = 1:N_inp
-        ) %>% select(division_country, treated)
+        ) %>% dplyr::select(division_country, treated)
     
     )
     
@@ -152,21 +152,21 @@ helper_assign_treat<-function(covariate_inp,unobs_inp, type_inp, N_inp, prop_tre
     while (abs(mean(p$p) - prop_treated_inp) > 0.0001) {
       add_p <- prop_treated_inp - mean(p$p)
       p <- p %>% rowwise() %>%
-        mutate(p = min(1, p + add_p))
+        dplyr::mutate(p = min(1, p + add_p))
     }
     #to actually assign treatment, we take our adjusted p from above
     #we compare it to a random uniform (for each indiv)
     #if it's larger, we say they are treated, else not treated
     #store the division (just the row, or unit) and the treated status
     return( p %>%
-      ungroup() %>%
-      mutate(
+      dplyr::ungroup() %>%
+      dplyr::mutate(
         u = runif(n = N_inp, min = 0, max = 1),
         treated = case_when(p > u ~ 1,
                             p <= u ~ 0),
         division_country = 1:N_inp
       ) %>%
-      select(division_country, treated) )
+      dplyr::select(division_country, treated) )
   }
   
 }
@@ -174,16 +174,16 @@ helper_assign_treat<-function(covariate_inp,unobs_inp, type_inp, N_inp, prop_tre
 helper_first_period<-function(N_inp, N_time_inp,treat_start_inp, treated_tib){
   
   last_treat=ceiling(median(c(N_time_inp, treat_start_inp)))
-  return(tibble(division_country = 1:N_inp,
+  return(tibble::tibble(division_country = 1:N_inp,
          first = sample(
            x = treat_start_inp:(N_time_inp - 5),
            size = N_inp,
            replace = TRUE
          )) %>% 
-    inner_join(treated_tib, by = "division_country") %>%
-    mutate(first = case_when(treated == 1 ~ first,
+    dplyr::inner_join(treated_tib, by = "division_country") %>%
+    dplyr::mutate(first = case_when(treated == 1 ~ first,
                              TRUE ~ NA_integer_)) %>%
-    select(-treated))
+    dplyr::select(-treated))
 }
 
 
@@ -226,16 +226,16 @@ helper_country_t_re_gen<-function(N_countries_inp, N_time_inp){
     tidyr::expand_grid(country = 1:N_countries_inp, time = 1:N_time_inp) 
   #tibble for each country, in time period 1, with a country specific normal shock
   r_one <-
-    tibble(
+    tibble::tibble(
       country  = 1:N_countries_inp,
       time = 1,
-      r = rnorm(n = N_countries_inp, mean = 0, sd = 1)
+      r = stats::rnorm(n = N_countries_inp, mean = 0, sd = 1)
     )
   
   #merge in the period 1 shock (country specific) into the country x time tibble
   r <-
     full_join(time_country_grid, r_one, by = c("country", "time")) %>%
-    group_by(country)
+    dplyr::group_by(country)
   
   #now, fill out the rest of the country x time shocks
   #for each time period and country combination,
@@ -245,7 +245,7 @@ helper_country_t_re_gen<-function(N_countries_inp, N_time_inp){
     for (c in 1:N_countries_inp) {
       r$r[r$time == t &
             r$country == c] = r$r[r$time == (t - 1) &
-                                    r$country == c] + rnorm(n = 1, mean = 0, sd = 0.1)
+                                    r$country == c] + stats::rnorm(n = 1, mean = 0, sd = 0.1)
     }
   }
   
@@ -274,7 +274,7 @@ helper_treatment_effect_seq<-function(fake_data_inp, tau_one_zero_inp, tau_decay
 helper_num_pitches<-function(N_time_inp, N_inp, T_freq_inp, fake_data_inp){
   
   fake_data_inp=fake_data_inp %>%
-    mutate(new_pitches = 0,
+    dplyr::mutate(new_pitches = 0,
            total_pitches = 0)
   #for each time and unit specific combination, we will create a variable for the number of
   #new pitches in that period (and a cumulative sum tracker)
@@ -298,10 +298,10 @@ helper_num_pitches<-function(N_time_inp, N_inp, T_freq_inp, fake_data_inp){
         # assign a random number of pitches (number of heads out of 10 coin flips) + minimum of 1
         fake_data_inp$new_pitches[fake_data_inp$division_country == i &
                                 fake_data_inp$time == t] <- 1 +
-          ifelse(T_freq_inp == "monthly", rbinom(n = 1, size = 10, prob = 0.5),
-                 ifelse(T_freq_inp == "weekly", rbinom(n = 1, size = 3, prob = 0.4),
-                        ifelse(T_freq_inp=="daily", rbernoulli(1, 2 / 9),
-                               rbinom(n = 1, size = 120, prob = 0.5)  )  ) )
+          ifelse(T_freq_inp == "monthly", stats::rbinom(n = 1, size = 10, prob = 0.5),
+                 ifelse(T_freq_inp == "weekly", stats::rbinom(n = 1, size = 3, prob = 0.4),
+                        ifelse(T_freq_inp=="daily", purrr::rbernoulli(1, 2 / 9),
+                               stats::rbinom(n = 1, size = 120, prob = 0.5)  )  ) )
         # if we are in the treatment period, total (cumulative pitches) is just the new pitched
         fake_data_inp$total_pitches[fake_data_inp$division_country == i &
                                   fake_data_inp$time == t] <-
@@ -311,10 +311,10 @@ helper_num_pitches<-function(N_time_inp, N_inp, T_freq_inp, fake_data_inp){
       else {
         # if in the post treat period, sample from the binomial without a min
         fake_data_inp$new_pitches[fake_data_inp$division_country == i &
-                                fake_data_inp$time == t] <- ifelse(T_freq_inp == "monthly", rbinom(n = 1, size = 10, prob = 0.5),
-                                                                   ifelse(T_freq_inp == "weekly", rbinom(n = 1, size = 3, prob = 0.4),
-                                                                          ifelse(T_freq_inp=="daily", rbernoulli(1, 2 / 9),
-                                                                                 rbinom(n = 1, size = 120, prob = 0.5)  )  ) )
+                                fake_data_inp$time == t] <- ifelse(T_freq_inp == "monthly", stats::rbinom(n = 1, size = 10, prob = 0.5),
+                                                                   ifelse(T_freq_inp == "weekly", stats::rbinom(n = 1, size = 3, prob = 0.4),
+                                                                          ifelse(T_freq_inp=="daily", purrr::rbernoulli(1, 2 / 9),
+                                                                                 stats::rbinom(n = 1, size = 120, prob = 0.5)  )  ) )
         
         # if we are in the proper post treat periods, we add the new pitches to the past cumulative sum
         fake_data_inp$total_pitches[fake_data_inp$division_country == i &
@@ -328,7 +328,7 @@ helper_num_pitches<-function(N_time_inp, N_inp, T_freq_inp, fake_data_inp){
   }
   
   return(fake_data_inp %>%
-    mutate(total_pitches = case_when(treated == 1 ~ total_pitches,
+    dplyr::mutate(total_pitches = case_when(treated == 1 ~ total_pitches,
                                      TRUE ~ 0)))
 }
 
@@ -386,7 +386,7 @@ gen_time_constant_data <-function(N_inp, prop_treated_inp, type_inp) {
   #and the vertical they have been randomly assigned to
   #assignment is done by sampling within creation, with replacement of course.
   #and according to the pmf defined in vertical_re$p
-  verticalxwalk <- tibble(
+  verticalxwalk <- tibble::tibble(
     division_country = 1:N_inp,
     vertical = sample(
       x = LETTERS[1:12],
@@ -400,43 +400,43 @@ gen_time_constant_data <-function(N_inp, prop_treated_inp, type_inp) {
   #Then, given the vertical they are assigned, we map on their vertical random effect 
   #(ASK Ignacio -- dropped immediately, not used for anything? -- sol: merged later)
   #then, we create a new variable, v25, that is 0 unless they are in vertical E or K
-  xs_obs_unobs <- inner_join(xs_obs_unobs, verticalxwalk, by = "division_country") %>%
-    inner_join(vertical_re, by = "vertical") %>%
-    mutate(v25 = case_when(vertical == "E" ~ -3.1,
+  xs_obs_unobs <- dplyr::inner_join(xs_obs_unobs, verticalxwalk, by = "division_country") %>%
+    dplyr::inner_join(vertical_re, by = "vertical") %>%
+    dplyr::mutate(v25 = case_when(vertical == "E" ~ -3.1,
                            vertical == "K" ~ -2.02,
                            TRUE ~ 0)) %>%
-    select(-vertical,-p,-vertical_re)
+    dplyr::select(-vertical,-p,-vertical_re)
   
   
   
   # Treatment
-  x_obs=xs_obs_unobs %>% select(-c(division_country,contains("unobs")) )
-  x_unobs=xs_obs_unobs %>% select(contains("unobs"))
+  x_obs=xs_obs_unobs %>% dplyr::select(-c(division_country,contains("unobs")) )
+  x_unobs=xs_obs_unobs %>% dplyr::select(contains("unobs"))
   treated<-helper_assign_treat(covariate_inp=x_obs,unobs_inp=x_unobs ,type_inp, N_inp, prop_treated_inp)
   
   
   # a_i
   #individual random effect for each unit, drawn from normal
   #output is tibble with ID and the indiv specific effect
-  a <- tibble(division_country = 1:N_inp,
-              a_i = rnorm(n = N_inp, mean = 0.1748,
+  a <- tibble::tibble(division_country = 1:N_inp,
+              a_i = stats::rnorm(n = N_inp, mean = 0.1748,
                           sd = 1.4678))
   
   
   # beta_i
   #define a random variable, specific to each unit
-  beta <- tibble(division_country = 1:N_inp,
-                 beta_i = rnorm(n = N_inp, mean = 0,
+  beta <- tibble::tibble(division_country = 1:N_inp,
+                 beta_i = stats::rnorm(n = N_inp, mean = 0,
                                 sd = 0.07789))
   
   #create a tibble of unit, unit random effect (ai and betai),
   #unit vertical (with prob of assignment and the vertical Random Effect)
   #and unit ever treated status
-  fake_data_unit_level <-inner_join(a, verticalxwalk, by = "division_country") %>%
-    inner_join(vertical_re, by = "vertical") %>%
-    inner_join(treated, by = "division_country") %>%
-    inner_join(beta, by = c("division_country")) %>% 
-    inner_join(xs_obs_unobs, by= "division_country")
+  fake_data_unit_level <-dplyr::inner_join(a, verticalxwalk, by = "division_country") %>%
+    dplyr::inner_join(vertical_re, by = "vertical") %>%
+    dplyr::inner_join(treated, by = "division_country") %>%
+    dplyr::inner_join(beta, by = c("division_country")) %>% 
+    dplyr::inner_join(xs_obs_unobs, by= "division_country")
   
   
   return(fake_data_unit_level)
@@ -457,22 +457,22 @@ helper_date_shocks<-function(T_freq_inp,date_start_inp,
   
   #Identidy the relevant components of the date (day/week/etc)
   date_info_tib=switch (T_freq_inp,
-                        "daily" = tibble(time=seq_len(N_time_inp),
+                        "daily" = tibble::tibble(time=seq_len(N_time_inp),
                                          date_t=period_dates,
                                          day_num=day(period_dates), 
                                          week_num=week(period_dates),
                                          month_num=month(period_dates), 
                                          year_num=year(period_dates)),
-                        "weekly"=tibble(time=seq_len(N_time_inp),
+                        "weekly"=tibble::tibble(time=seq_len(N_time_inp),
                                         date_t=period_dates,
                                         week_num=week(period_dates),
                                         month_num=month(period_dates), 
                                         year_num=year(period_dates)),
-                        "monthly"=tibble(time=seq_len(N_time_inp),
+                        "monthly"=tibble::tibble(time=seq_len(N_time_inp),
                                          date_t=period_dates,
                                          month_num=month(period_dates), 
                                          year_num=year(period_dates)),
-                        "yearly"=tibble(time=seq_len(N_time_inp),
+                        "yearly"=tibble::tibble(time=seq_len(N_time_inp),
                                         date_t=period_dates,
                                         year_num=year(period_dates))
   )
@@ -480,7 +480,7 @@ helper_date_shocks<-function(T_freq_inp,date_start_inp,
   
   date_time_grid=tidyr::expand_grid(time = seq_len(N_time_inp),
                                     division_country = time_constant_data$division_country) %>%
-    inner_join(date_info_tib, by="time")
+    dplyr::inner_join(date_info_tib, by="time")
   
   
   date_levels=factor(c("daily", "weekly", "monthly", "yearly"), ordered = T, levels =c("daily", "weekly", "monthly", "yearly") )
@@ -494,8 +494,8 @@ helper_date_shocks<-function(T_freq_inp,date_start_inp,
   #add noise for the fine-ness of the data, as well as coarser dates (assumed independent)
   joint_sd=sum(freq_sd[seq(freq_ind,length(freq_sd))]**2)
 
-  return(date_time_grid %>% group_by_at(c(freq_vars)) %>%
-           mutate(date_shock=rnorm(1,0, joint_sd)))
+  return(date_time_grid %>% dplyr::group_by_at(c(freq_vars)) %>%
+           dplyr::mutate(date_shock=stats::rnorm(1,0, joint_sd)))
   
 }
 
@@ -559,7 +559,7 @@ gen_time_varying_data<-function(time_constant_data,N_inp,  N_time_inp, T_freq_in
   #map each row (Id) to a country by sampling from the list of countries
   #following the specified probability of each
   #output is a tibble with the Id and country assigned to said ID
-  countryxwalk <- tibble(
+  countryxwalk <- tibble::tibble(
     division_country = 1:N_inp,
     country = sample(
       x = countries$country,
@@ -574,11 +574,11 @@ gen_time_varying_data<-function(time_constant_data,N_inp,  N_time_inp, T_freq_in
   #merge with time grid as well, to make it a long panel data (row is unit x time)
   #so far, all the vars are time constant and are thus repeated 
   fake_data_time_varying <-
-    inner_join(time_constant_data, countryxwalk, by = "division_country") %>%
-    select(-p) %>%
-    inner_join(countries, by = "country") %>%
-    select(-p) %>%
-    inner_join(time_grid, by = "division_country")
+    dplyr::inner_join(time_constant_data, countryxwalk, by = "division_country") %>%
+    dplyr::select(-p) %>%
+    dplyr::inner_join(countries, by = "country") %>%
+    dplyr::select(-p) %>%
+    dplyr::inner_join(time_grid, by = "division_country")
   
   
   #for each time period and country combination,
@@ -588,7 +588,7 @@ gen_time_varying_data<-function(time_constant_data,N_inp,  N_time_inp, T_freq_in
   
   
   #after filling out the grid for each country/time pair, merge into fake data
-  fake_data_time_varying <- inner_join(fake_data_time_varying, r, by = c("country", "time"))
+  fake_data_time_varying <- dplyr::inner_join(fake_data_time_varying, r, by = c("country", "time"))
   
   ## pitches
   
@@ -599,17 +599,17 @@ gen_time_varying_data<-function(time_constant_data,N_inp,  N_time_inp, T_freq_in
   #ask ignacio: can we parameterize the first treat (5)?
   #Also thinking of using N_inp-1, but the frac of treated for only 1 period would be too high
   #thoughts on sampling from a dist like Alex P?
-  treated=time_constant_data %>% select(division_country,treated)
+  treated=time_constant_data %>% dplyr::select(division_country,treated)
   first_period <-helper_first_period(N_inp, N_time_inp,treat_start_inp,treated)
   
   #add to our fake data tibble two columns: the time of first treatment (unit specific)
   #and the relation of the current row to treat time (-1 would be period before treat)
-  fake_data_time_varying <- inner_join(fake_data_time_varying, first_period, by = "division_country") %>%
-    mutate(m = time - first)
+  fake_data_time_varying <- dplyr::inner_join(fake_data_time_varying, first_period, by = "division_country") %>%
+    dplyr::mutate(m = time - first)
   
   fake_data_time_varying=helper_num_pitches(N_time_inp, N_inp, T_freq_inp ,fake_data_time_varying)
   
-  return(fake_data_time_varying %>% inner_join(date_time_grid, by=c("division_country","time"))%>% arrange(time,division_country ) )
+  return(fake_data_time_varying %>% dplyr::inner_join(date_time_grid, by=c("division_country","time"))%>% arrange(time,division_country ) )
   
 }
 
@@ -630,17 +630,17 @@ gen_synthetic_output<-function(synthetic_data_vars, tau_one_zero_inp, tau_decay_
   #y0 stores the unit and initial y value
   y0 <- synthetic_data_vars %>%
     filter(time == 1) %>%
-    mutate(
+    dplyr::mutate(
       mu_i_zero = a_i + vertical_re + r + beta_i + date_shock,
-      y_0 = rnorm(n = N_inp, mean = mu_i_zero, sd = sd_0)
+      y_0 = stats::rnorm(n = N_inp, mean = mu_i_zero, sd = sd_0)
     ) %>%
-    select(division_country, y_0)
+    dplyr::select(division_country, y_0)
   
   #create an NxTime matrix with the values indicating time relative to first treat (m)
   m_matrix <- synthetic_data_vars %>%
-    select(division_country, time, m) %>%
+    dplyr::select(division_country, time, m) %>%
     tidyr::pivot_wider(names_from = time, values_from = m) %>%
-    select(-division_country) %>%
+    dplyr::select(-division_country) %>%
     as.matrix()
   
   # y matrix without treatment
@@ -648,10 +648,10 @@ gen_synthetic_output<-function(synthetic_data_vars, tau_one_zero_inp, tau_decay_
   #create a NxTime matrix with values being the ith unit's mean in time j
   #the mean is the sum of random effects, which is where the normal y will be centered
   u <- synthetic_data_vars %>%
-    mutate(mu_i_t = a_i + vertical_re + r + beta_i * time + date_shock) %>%
-    select(division_country, time, mu_i_t) %>%
+    dplyr::mutate(mu_i_t = a_i + vertical_re + r + beta_i * time + date_shock) %>%
+    dplyr::select(division_country, time, mu_i_t) %>%
     tidyr::pivot_wider(names_from = time, values_from = mu_i_t) %>%
-    select(-division_country) %>%
+    dplyr::select(-division_country) %>%
     as.matrix()
   
   #initialize the non-treated outcome matrix, and assign the 
@@ -665,9 +665,9 @@ gen_synthetic_output<-function(synthetic_data_vars, tau_one_zero_inp, tau_decay_
   #generate a NxTime matrix, where value in i j is 
   #unit i's total pitches in period j
   total_pitches_matrix <- synthetic_data_vars %>%
-    select(division_country, time, total_pitches) %>%
+    dplyr::select(division_country, time, total_pitches) %>%
     tidyr::pivot_wider(names_from = time, values_from = total_pitches) %>%
-    select(-division_country) %>%
+    dplyr::select(-division_country) %>%
     as.matrix()
   
   tau_one <-helper_treatment_effect_seq(synthetic_data_vars, tau_one_zero_inp, tau_decay_inp)
@@ -683,7 +683,7 @@ gen_synthetic_output<-function(synthetic_data_vars, tau_one_zero_inp, tau_decay_
       #and draw a new outcome centered around this AR mean
       mu_it <- rho_y_inp * (y_t0[i, (t - 1)] - u[i, (t - 1)]) +
         u[i, t]
-      y_t0[i, t] <- rnorm(n = 1, mean = mu_it, sd = sd_e)
+      y_t0[i, t] <- stats::rnorm(n = 1, mean = mu_it, sd = sd_e)
       
       #if the unit receives treatment in this period -- ie they are in the post period
       #and received treatment
@@ -711,20 +711,20 @@ gen_synthetic_output<-function(synthetic_data_vars, tau_one_zero_inp, tau_decay_
   #transform the counterfactual and treated matrices of y into tibbles
   #and pivot long. This yields a tibble with each row having a unique combo of 
   #time, unit and the affiliated y0 or y1
-  y_t0_long <- as_tibble(y_t0) %>%
-    mutate(division_country = 1:N_inp) %>%
+  y_t0_long <- tibble::as_tibble(y_t0) %>%
+    dplyr::mutate(division_country = 1:N_inp) %>%
     tidyr::pivot_longer(names_to = 'time', cols = -division_country) %>%
-    mutate(time = as.integer(time)) %>%
-    rename(y0 = value)
+    dplyr::mutate(time = as.integer(time)) %>%
+    dplyr::rename(y0 = value)
   
-  y_t1_long <- as_tibble(y_t1) %>%
-    mutate(division_country = 1:N_inp) %>%
+  y_t1_long <- tibble::as_tibble(y_t1) %>%
+    dplyr::mutate(division_country = 1:N_inp) %>%
     tidyr::pivot_longer(names_to = 'time', cols = -division_country) %>%
-    mutate(time = as.integer(time)) %>%
-    rename(y1 = value)
+    dplyr::mutate(time = as.integer(time)) %>%
+    dplyr::rename(y1 = value)
   
   #merge the treated and counterfactual 
-  return(inner_join(y_t0_long, y_t1_long, by = c("division_country", "time")))
+  return(dplyr::inner_join(y_t0_long, y_t1_long, by = c("division_country", "time")))
 }
 
 
@@ -799,10 +799,10 @@ gen_data <-function(N = 500,  N_time = 100, treat_start=45,
     #exponentiate all outcomes, and multiply by 1000
     #define y as the "observed" outcome in potential outcome framework
     fake_data <-
-      inner_join(fake_data, y_long, by = c("division_country", "time")) %>%
-      mutate(y = case_when(treated == 1 ~ y1 ,
+      dplyr::inner_join(fake_data, y_long, by = c("division_country", "time")) %>%
+      dplyr::mutate(y = case_when(treated == 1 ~ y1 ,
                            treated == 0 ~ y0))  %>%
-      mutate(y0 = exp(y0) * 1000,
+      dplyr::mutate(y0 = exp(y0) * 1000,
              y1 = exp(y1) * 1000,
              y = exp(y) * 1000)
     
@@ -821,18 +821,18 @@ gen_data <-function(N = 500,  N_time = 100, treat_start=45,
     
     ## Output data
     synthetic_data_full=fake_data %>%
-      rename(period=time,post_treat_t=m, Treatment_Period=first) %>%
-      mutate(treatperiod_0=case_when(
+      dplyr::rename(period=time,post_treat_t=m, Treatment_Period=first) %>%
+      dplyr::mutate(treatperiod_0=case_when(
         period>=Treatment_Period~1,
         period<Treatment_Period~0
       )) %>% 
-      rename(entry=division_country) %>% arrange(period, entry) %>%
-      select(period, entry, Treatment_Period, new_pitches, total_pitches, 
+      dplyr::rename(entry=division_country) %>% arrange(period, entry) %>%
+      dplyr::select(period, entry, Treatment_Period, new_pitches, total_pitches, 
              y0, y1, y, post_treat_t, everything())
     
   return(synthetic_data_full)
     
-    # my_fake_data <- synthetic_data_full %>% mutate(
+    # my_fake_data <- synthetic_data_full %>% dplyr::mutate(
     #   true_lift = true_lift,
     #   N = N,
     #   tau_one_zero = tau_one_zero,
@@ -915,10 +915,10 @@ gen_data_lubr <-function(N = 100,  date_start="2019-09-04",
   #exponentiate all outcomes, and multiply by 1000
   #define y as the "observed" outcome in potential outcome framework
   fake_data <-
-    inner_join(fake_data, y_long, by = c("division_country", "time")) %>%
-    mutate(y = case_when(treated == 1 ~ y1 ,
+    dplyr::inner_join(fake_data, y_long, by = c("division_country", "time")) %>%
+    dplyr::mutate(y = case_when(treated == 1 ~ y1 ,
                          treated == 0 ~ y0))  %>%
-    mutate(y0 = exp(y0) * 1000,
+    dplyr::mutate(y0 = exp(y0) * 1000,
            y1 = exp(y1) * 1000,
            y = exp(y) * 1000)
   
@@ -937,19 +937,19 @@ gen_data_lubr <-function(N = 100,  date_start="2019-09-04",
   
   ## Output data
   synthetic_data_full=fake_data %>% 
-    rename(period=time,post_treat_t=m, Treatment_Period=first) %>%
-    mutate(treatperiod_0=case_when(
+    dplyr::rename(period=time,post_treat_t=m, Treatment_Period=first) %>%
+    dplyr::mutate(treatperiod_0=case_when(
       is.na(Treatment_Period)~0,
       period>=Treatment_Period~1,
       period<Treatment_Period~0
     )) %>% 
-    rename(entry=division_country) %>% arrange(period, entry) %>%
-    select(date_t, period, entry, Treatment_Period, new_pitches, total_pitches, 
+    dplyr::rename(entry=division_country) %>% arrange(period, entry) %>%
+    dplyr::select(date_t, period, entry, Treatment_Period, new_pitches, total_pitches, 
            y0, y1, y, post_treat_t, everything())
   
   return(synthetic_data_full)
   
-  # my_fake_data <- synthetic_data_full %>% mutate(
+  # my_fake_data <- synthetic_data_full %>% dplyr::mutate(
   #   true_lift = true_lift,
   #   N = N,
   #   tau_one_zero = tau_one_zero,
@@ -980,30 +980,30 @@ aggregate_data_by_date<-function(disagg_data, to="monthly", from="daily"){
   to_vars=agg_ids[seq(to_ind, length(agg_ids))]
   
   new_date_name=paste0(to, "_date_end", sep="")
-  agg_data=disagg_data %>% group_by_at(c("entry",to_vars)) %>%
+  agg_data=disagg_data %>% dplyr::group_by_at(c("entry",to_vars)) %>%
     summarise(new_pitches=sum(new_pitches), total_pitches=sum(total_pitches),
               y0=sum(y0), y1=sum(y1), y=sum(y),
               !!as.name(new_date_name):=max(date_t),
               treatperiod_0=max(treatperiod_0)
-              ) %>% ungroup() 
+              ) %>% dplyr::ungroup() 
   
   agg_data=agg_data %>% 
-    mutate(period=agg_data %>% group_by_at(to_vars) %>% select(tidyselect::all_of(to_vars)) %>% group_indices()) 
+    dplyr::mutate(period=agg_data %>% dplyr::group_by_at(to_vars) %>% dplyr::select(tidyselect::all_of(to_vars)) %>% dplyr::group_indices()) 
   
-  agg_data_covariates=agg_data %>% inner_join(
-    disagg_data %>% select(-c(period, date_t, Treatment_Period, 
+  agg_data_covariates=agg_data %>% dplyr::inner_join(
+    disagg_data %>% dplyr::select(-c(period, date_t, Treatment_Period, 
                               treatperiod_0, post_treat_t, 
                               r, date_shock, setdiff(agg_ids,to_vars),
                               new_pitches, total_pitches,
                               y0,y1, y)) %>%
       distinct_at(c("entry",to_vars), .keep_all = T), 
     by=c("entry", to_vars)
-  ) %>% group_by(entry) %>%
-    mutate(Treatment_Period=case_when(
+  ) %>% dplyr::group_by(entry) %>%
+    dplyr::mutate(Treatment_Period=case_when(
       treated==0~NA_real_,
       treated==1~(length(treatperiod_0)-sum(treatperiod_0)+1)
     ),
-    post_treat_t=period-Treatment_Period) %>% ungroup()
+    post_treat_t=period-Treatment_Period) %>% dplyr::ungroup()
   
   return(agg_data_covariates)
 

@@ -1,6 +1,4 @@
-library(tidyr)
-library(dplyr)
-library(furrr)
+pacman::p_load(dplyr, furrr, tidyr, stats)
 ############################################
 # Functions to create a placebo dataset,
 # assigning treatment based on matching.

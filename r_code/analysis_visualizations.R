@@ -96,8 +96,103 @@ create_gap_ci_plot <- function(bootstrapped_effects_df, time_var = "post_period_
 }
 
 
+plot_individual_cf<-function(est_data_inp, time_var="period", id_var="entry",
+                             outcome_var="response",
+                             prediction_var="point.pred",
+                             treat_period_var="Treatment_Period"){
+  
+  big_ids=est_data_inp %>%
+    dplyr::filter(!!as.name(time_var)==1) %>%
+    dplyr::filter(!!as.name(outcome_var)>
+                    quantile(!!as.name(outcome_var),0.95)) %>%
+    dplyr::select(tidyselect::all_of(c(id_var, treat_period_var)))
+  
+  random_ids=est_data_inp %>%
+    dplyr::filter(!!as.name(time_var)==1) %>%
+    dplyr::filter(!!as.name(id_var) %in% 
+                    setdiff(!!as.name(id_var), big_ids %>% 
+                              dplyr::pull(!!as.name(id_var)))) %>%
+    dplyr::sample_n(3) %>%
+    dplyr::select(tidyselect::all_of(c(id_var, treat_period_var)))
+  
+  indiv_ids=big_ids %>% 
+    dplyr::bind_rows(random_ids) %>% 
+    dplyr::pull(!!as.name(id_var))
+  
+  indiv_treat=big_ids %>% 
+    dplyr::bind_rows(random_ids) %>% 
+    dplyr::pull(!!as.name(treat_period_var))
+  
+  plot_out <- furrr::future_map2(.x=indiv_ids, .y=indiv_treat,
+                                 .f=individual_cf_helper, data_inp=est_data_inp)
+  
+  return(plot_out)
+  
+}
 
 
+individual_cf_helper<-function(data_inp, id_inp, treat_inp,
+                             id_var="entry",time_var="period" ,
+                             outcome_var="response",
+                             prediction_var="point.pred"){
+  data_inp %>%
+    dplyr::filter(!!as.name(id_var)==id_inp) %>%
+    ggplot2::ggplot(aes(x = !!as.name(time_var), y = !!as.name(outcome_var))) +
+    ggplot2::geom_line(aes(color="Outcome")) +
+    ggplot2::geom_line(aes(y=!!as.name(prediction_var), color="Predicted" ))+
+    ggplot2::geom_vline(xintercept = treat_inp, color="red") +
+    ggplot2::scale_color_manual(name="Type", values = c("black", "darkgray"))+
+    ggplot2::theme_bw()+
+    ggplot2::labs(x="Time", y="Outcome", 
+                  title = "Counterfactual vs Outcome Series",
+                  subtitle = paste("ID=",id_inp))
+}
+
+
+
+
+
+plot_full_gap<-function(est_data_inp,  time_var="period", id_var="entry",
+                        outcome_var="response", prediction_var="point.pred",
+                        treat_period_var="Treatment_Period", start_plot=-20,
+                        pct_flag=F){
+  single_dataset=F
+  #Turn a single dataframe into a list, but note the type of data
+  if(inherits(est_data_inp, "data.frame")){
+    single_dataset=T
+    est_data_inp=list(est_data_inp)
+  }
+  #Step 1: make a call to the jackknife function 
+  gap_full=furrr::future_map(est_data_inp, compute_tot_se_jackknife, 
+                             stat_in="mean", post_treat_only=F)
+  gap_full_forplot=furrr::future_map(gap_full, 
+                                     function(x){
+                                       return(
+                                         x %>% 
+                                           dplyr::filter(post_period_t>=start_plot)
+                                         )})
+  #Step 2: make a call to the plot with updated title
+  #If we are simulating (or have multiple data with draws from eps), 
+  #compute the bias first. If we are only dealing with one dataset, print as is.
+  if(single_dataset==T){
+    plot_out<- create_gap_ci_plot(gap_full_forplot[[1]], 
+                       plot_title="Gap Plot", 
+                       plot_x_lab="Time Period",
+                       plot_y_lab="ToT", pct_flag = pct_flag)+
+      geom_vline(xintercept = 0, color="blue")
+  }
+  else{
+    bias_forplot=compute_jackknife_bias(gap_full_forplot,horizon = max(gap_full_forplot[[1]]$post_period_t) )
+    plot_out <- create_gap_ci_plot(bias_forplot, 
+                                   plot_title="Gap Plot", 
+                                   plot_x_lab="Time Period",
+                                   plot_y_lab="ToT", pct_flag = pct_flag)+
+      geom_vline(xintercept = 0, color="blue")
+  }
+  
+  return(plot_out)
+  
+}
 
 
 

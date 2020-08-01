@@ -15,6 +15,8 @@ library(tictoc)
 library(gt)
 library(ggplot2)
 library(here)
+library(gridExtra)
+library(knitr)
 source(here("r_code/factor_dgp.R"))
 plan(multiprocess, workers=availableCores()-1)
 ```
@@ -1470,3 +1472,20 @@ mc_AA_sel_bias_plot
 causalimpact_AA_sel_bias_plot
 
 ```
+
+
+## Notes about Variations
+
+Seem to do a terrible job on "aa_high_acf_loading_shift" -- the bias is quite high at 0.4 and the coverage is abysmal as 0.15.
+
+This is also seen in "aa_noisy_factors_load_shift" -- which is a similar DGP just with extra factors. Coverage is better here, but bias is still quite high.
+
+Gsynth, MC, and Causal Impact all seem to be highly correlated -- or at least incredibly similar in their bias properties. SCDID is most unique in the plots.
+
+With the AB -- interesting that most methods (especially causal impact) do slightly better on ab_impact_het_loading_shift relative to ab_impact_het (the former=the latter plus selection via loadings). This is also true when we combine impact and decay het -- the selected datasets do mostly fine with bias, but the estimators are quite poor without selection... Also true without any heterogeneity...
+
+Decay heterogeneity leads to quite poor estimates -- less bad without selection in Post Treat 0 but steadily gets worse over time.
+
+
+
+

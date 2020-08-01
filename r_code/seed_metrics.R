@@ -33,11 +33,13 @@ compute_jackknife_bias<-function(tot_list, alpha_ci = 0.95, horizon=5){
     furrr::future_map(~ .[["bias"]]) %>%
     furrr::future_map(~ jackknife(., mean))
   
+  post_range=c(min(tot_tib$post_period_t),max(tot_tib$post_period_t) )
   #Gather the bounds on the confidence intervals and format as tibble
   jk_comp_ci <-format_jackknife(
-    jk_est=jk_comp_abs,ci_in=alpha_ci,col_name="abs_bias") %>%
+    jk_est=jk_comp_abs,ci_in=alpha_ci,col_name="abs_bias",range=post_range) %>%
     dplyr::inner_join(
-      format_jackknife(jk_est=jk_comp_pct,ci_in=alpha_ci, col_name="pct_bias"), 
+      format_jackknife( jk_est=jk_comp_pct,ci_in=alpha_ci, 
+                        col_name="pct_bias", range=post_range), 
       by="post_period_t") %>%
     dplyr::select(post_period_t, dplyr::everything()) %>%
     dplyr::mutate(cf_bias_pct=0, cf_bias_abs=0)
@@ -77,11 +79,12 @@ compute_tot_variance<-function(tot_list, horizon=5){
     furrr::future_map(~ jackknife(., var))
   
   #Gather the bounds on the confidence intervals and format as tibble
+  post_range=c(min(tot_tib$post_period_t),max(tot_tib$post_period_t) )
   jk_comp_ci <-format_jackknife(
-    jk_est=jk_comp_abs,ci_in=0.95,col_name="abs_tot_var") %>%
+    jk_est=jk_comp_abs,ci_in=0.95,col_name="abs_tot_var", range=post_range) %>%
     dplyr::inner_join(
       format_jackknife(jk_est=jk_comp_pct,ci_in=0.95, 
-                       col_name="pct_tot_var"), 
+                       col_name="pct_tot_var", range=post_range), 
       by="post_period_t") %>%
     dplyr::select(post_period_t, jackknife_abs_tot_var, observed_abs_tot_var,
                   jackknife_pct_tot_var,observed_pct_tot_var)
@@ -191,9 +194,9 @@ compute_jackknife_metrics<-function(estimated_tib_list, time_var = "period",
     #                                  col_name= "mae")
     # jackknife_comp_ci <- jk_comp_ci_mae %>% 
     #   dplyr::inner_join(jk_comp_ci_mse, by = "post_period_t")
-    
+    post_range=c(min(avg_metric_series$post_period_t),horizon-1)
     jk_comp_ci_mse= format_jackknife(jk_est=jk_comp_mse,ci_in=alpha_ci, 
-                                     col_name= "mse") %>%
+                                     col_name= "mse", range=post_range) %>%
       dplyr::mutate(jackknife_rmse=sqrt(jackknife_mse),
                     observed_rmse=sqrt(observed_mse)) %>% 
       dplyr::select(post_period_t, jackknife_rmse, observed_rmse) 
