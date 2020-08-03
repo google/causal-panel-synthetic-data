@@ -1,3 +1,31 @@
+#explore why data is lacking overlap where it shouldn't
+load(here::here("Data", "Variations","aa_noisy_factors.RData" ))
+random_data=sample(1:n_seeds,1)
+tsfeature_by_treat_df(formatted_data[[random_data]])
+tsfeature_pc_by_treatment_plot(formatted_data[[random_data]])
+
+data_requested %>%
+  group_by(treated) %>%
+  summarise(mean_rho=mean(autocorr),
+            mean_int=mean(intercept),
+            mean_load1=mean(loading1),
+            mean_load2=mean(loading2),
+            mean_load3=mean(loading3),
+            mean_load4=mean(loading4),
+            mean_load5=mean(loading5),
+            mean_load6=mean(loading6))
+  
+
+
+
+
+
+
+
+
+
+
+
 
 AA_data_re=gen_data(N = 800,  N_time = 60, treat_start=15,
                     tau_one_zero = 0, tau_decay=0.9, gamma = 0.0009,

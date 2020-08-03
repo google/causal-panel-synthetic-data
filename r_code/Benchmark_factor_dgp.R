@@ -21,7 +21,7 @@ aa_dgp_params<-list(
   "aa_high_acf"=list(date_start="2010-01-01",
        first_treat="2017-07-01",
        date_end="2020-01-01",
-       num_entries=200,
+       num_entries=800,
        prop_treated=0.25,
        treat_impact_sd = 0, 
        treat_impact_mean = 0, 
@@ -34,7 +34,7 @@ aa_dgp_params<-list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
-    num_entries=200,
+    num_entries=800,
     prop_treated=0.25,
     treat_impact_sd = 0, 
     treat_impact_mean = 0, 
@@ -50,7 +50,7 @@ aa_dgp_params<-list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
-    num_entries=200,
+    num_entries=800,
     prop_treated=0.25,
     treat_impact_sd = 0, 
     treat_impact_mean = 0, 
@@ -64,7 +64,7 @@ aa_dgp_params<-list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
-    num_entries=200,
+    num_entries=800,
     prop_treated=0.25,
     treat_impact_sd = 0, 
     treat_impact_mean = 0, 
@@ -80,7 +80,7 @@ aa_dgp_params<-list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
-    num_entries=200,
+    num_entries=800,
     prop_treated=0.25,
     treat_impact_sd = 0, 
     treat_impact_mean = 0, 
@@ -96,7 +96,7 @@ aa_dgp_params<-list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
-    num_entries=200,
+    num_entries=800,
     prop_treated=0.25,
     treat_impact_sd = 0, 
     treat_impact_mean = 0, 
@@ -111,7 +111,7 @@ aa_dgp_params<-list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
-    num_entries=200,
+    num_entries=800,
     prop_treated=0.25,
     treat_impact_sd = 0, 
     treat_impact_mean = 0, 
@@ -127,7 +127,7 @@ aa_dgp_params<-list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
-    num_entries=200,
+    num_entries=800,
     prop_treated=0.25,
     treat_impact_sd = 0, 
     treat_impact_mean = 0, 
@@ -144,7 +144,7 @@ ab_dgp_params<-list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
-    num_entries=200,
+    num_entries=800,
     prop_treated=0.25,
     treat_impact_sd = 0, 
     treat_impact_mean = 0.1,
@@ -159,7 +159,7 @@ ab_dgp_params<-list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
-    num_entries=200,
+    num_entries=800,
     prop_treated=0.25,
     treat_impact_sd = 0, 
     treat_impact_mean = 0.1,
@@ -174,7 +174,7 @@ ab_dgp_params<-list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
-    num_entries=200,
+    num_entries=800,
     prop_treated=0.25,
     treat_impact_sd = 0.1, 
     treat_impact_mean = 0.1,
@@ -190,7 +190,7 @@ ab_dgp_params<-list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
-    num_entries=200,
+    num_entries=800,
     prop_treated=0.25,
     treat_impact_sd = 0, 
     treat_impact_mean = 0.1,
@@ -206,7 +206,7 @@ ab_dgp_params<-list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
-    num_entries=200,
+    num_entries=800,
     prop_treated=0.25,
     treat_impact_sd = 0, 
     treat_impact_mean = 0.1,
@@ -222,7 +222,7 @@ ab_dgp_params<-list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
-    num_entries=200,
+    num_entries=800,
     prop_treated=0.25,
     treat_impact_sd = 0.1, 
     treat_impact_mean = 0.1,
@@ -238,7 +238,7 @@ ab_dgp_params<-list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
-    num_entries=200,
+    num_entries=800,
     prop_treated=0.25,
     treat_impact_sd = 0, 
     treat_impact_mean = 0.1,
@@ -254,7 +254,7 @@ ab_dgp_params<-list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
-    num_entries=200,
+    num_entries=800,
     prop_treated=0.25,
     treat_impact_sd = 0, 
     treat_impact_mean = 0.1,
@@ -271,7 +271,7 @@ ab_dgp_params<-list(
 
 
 #TODO(alexdkellogg): doing double the work (calling tot on post and all periods)
-list_of_dgps=c(aa_dgp_params,ab_dgp_params)[3]
+list_of_dgps=c(aa_dgp_params,ab_dgp_params)
 for(i in seq_len(length(list_of_dgps))){
   tic("Starting DGP")
   data_requested=do.call(factor_synthetic_dgp,list_of_dgps[[i]])
@@ -288,7 +288,7 @@ for(i in seq_len(length(list_of_dgps))){
   gsynth_est=furrr::future_map(formatted_data, estimate_gsynth_series, se=F)
   gsynth_tot=furrr::future_map(gsynth_est, compute_tot_se_jackknife, stat_in="mean")
   
-  # gsynth_bias=compute_jackknife_bias(gsynth_tot)
+  gsynth_bias=compute_jackknife_bias(gsynth_tot)
   # gsynth_bias_plot=create_gap_ci_plot(gsynth_bias, 
   #                                     plot_title="Gsynth Bias", 
   #                                     plot_x_lab="Post-Treat Time",
@@ -304,7 +304,7 @@ for(i in seq_len(length(list_of_dgps))){
   scdid_est=furrr::future_map(formatted_data, estimate_scdid_series)
   scdid_tot=furrr::future_map(scdid_est, compute_tot_se_jackknife, stat_in="mean")
 
-  # scdid_bias=compute_jackknife_bias(scdid_tot)
+  scdid_bias=compute_jackknife_bias(scdid_tot)
   # scdid_bias_plot=create_gap_ci_plot(scdid_bias,
   #                                       plot_title="SCDID Bias",
   #                                       plot_x_lab="Post-Treat Time",
@@ -321,7 +321,7 @@ for(i in seq_len(length(list_of_dgps))){
                    estimator="mc")
   mc_tot=furrr::future_map(mc_est, compute_tot_se_jackknife, stat_in="mean")
 
-  # mc_bias=compute_jackknife_bias(mc_tot)
+  mc_bias=compute_jackknife_bias(mc_tot)
   # mc_bias_plot=create_gap_ci_plot(mc_bias,
   #                                    plot_title="MC Bias",
   #                                    plot_x_lab="Post-Treat Time",
@@ -337,7 +337,7 @@ for(i in seq_len(length(list_of_dgps))){
   causalimpact_est=furrr::future_map(formatted_data, estimate_causalimpact_series)
   causalimpact_tot=furrr::future_map(causalimpact_est, compute_tot_se_jackknife, stat_in="mean")
 
-  # causalimpact_bias=compute_jackknife_bias(causalimpact_tot)
+  causalimpact_bias=compute_jackknife_bias(causalimpact_tot)
   # causalimpact_bias_plot=create_gap_ci_plot(causalimpact_bias,
   #                                              plot_title="Causal Impact Bias",
   #                                              plot_x_lab="Post-Treat Time",
@@ -358,8 +358,12 @@ for(i in seq_len(length(list_of_dgps))){
                            estimator="mc")
   causalimpact_placebo_est=furrr::future_map(placebo_data, estimate_causalimpact_series)
   
-  ensemble_weights=furrr::future_pmap(list(gsynth_placebo_est, scdid_placebo_est, mc_placebo_est, causalimpact_placebo_est), 
-                                     ensemble_placebo_weights, constrained=T, intercept_allowed=T)
+  ensemble_weights=tryCatch( 
+    {furrr::future_pmap(list(gsynth_placebo_est, scdid_placebo_est, mc_placebo_est, causalimpact_placebo_est), 
+                                     ensemble_placebo_weights, constrained=T, intercept_allowed=T) },
+    error=function(e){
+      rep(list(c(0,0.25,0.25,0.25,0.25)), n_seeds)
+    })
   ensemble_est=furrr::future_pmap(list( method1_estimated_df=gsynth_est,
                                         method2_estimated_df=scdid_est, 
                                         method3_estimated_df=causalimpact_est,
@@ -367,7 +371,7 @@ for(i in seq_len(length(list_of_dgps))){
                                         est_weights=ensemble_weights),
                                ensembled_predictor)
   ensemble_tot=furrr::future_map(ensemble_est, compute_tot_se_jackknife, stat_in="mean")
-  # ensemble_bias=compute_jackknife_bias(ensemble_tot)
+  ensemble_bias=compute_jackknife_bias(ensemble_tot)
   # ensemble_bias_plot=create_gap_ci_plot(ensemble_bias,
   #                                           plot_title="Ensemble Bias",
   #                                           plot_x_lab="Post-Treat Time",
@@ -379,7 +383,7 @@ for(i in seq_len(length(list_of_dgps))){
   ensemble_coverage=compute_tot_coverage(ensemble_tot)
   toc()
   
-  save.image(here::here(paste("Data/",names(list_of_dgps)[i],".RData",sep = "")))
+  save.image(here::here("Data", "Variations", paste(names(list_of_dgps)[i],".RData",sep = "")))
   #save.image(here::here(paste("Data/",glue::glue("Data{i}.RData"),sep = "")))
 }
 
