@@ -848,7 +848,7 @@ gen_data <-function(N = 500,  N_time = 100, treat_start=45,
 
 
 
-gen_data_lubr <-function(N = 100,  date_start="2019-09-04",
+gen_data_lubr <-function(N = 100,  date_start="2018-09-04",
                          date_end="2020-07-04",
                          first_treat="2020-01-04", 
                          T_freq=c("daily","weekly","monthly", "yearly"),
@@ -914,13 +914,24 @@ gen_data_lubr <-function(N = 100,  date_start="2019-09-04",
   #merge the treated/counterfactual outcomes into fake_data
   #exponentiate all outcomes, and multiply by 1000
   #define y as the "observed" outcome in potential outcome framework
+  
   fake_data <-
-    dplyr::inner_join(fake_data, y_long, by = c("division_country", "time")) %>%
-    dplyr::mutate(y = case_when(treated == 1 ~ y1 ,
-                         treated == 0 ~ y0))  %>%
-    dplyr::mutate(y0 = exp(y0) * 1000,
-           y1 = exp(y1) * 1000,
-           y = exp(y) * 1000)
+    dplyr::inner_join(fake_data, y_long, by = c("division_country", "time")) 
+  
+  rescale_y=dplyr::case_when(
+    T_freq=="yearly"~1.5e4*12,
+    T_freq=="monthly"~1.5e4,
+    T_freq=="weekly"~1.5e4/4,
+    T_freq=="daily"~1.5e4/30)
+  
+  fake_data <- fake_data %>%
+    dplyr::mutate(rescaled_y0=(y0-mean(y0))/sd(y0)+log(rescale_y),
+                  rescaled_y1=y1-(mean(y0)-log(rescale_y)),
+                  y = case_when(treated == 1 ~ rescaled_y1 ,
+                         treated == 0 ~ rescaled_y0), 
+                  y0 = exp(rescaled_y0) ,
+                  y1 = exp(rescaled_y1),
+                  y = exp(y))
   
   # # True lift
   # #q1 is the first quarter after treatment -- post treat period 0,1,2
@@ -991,9 +1002,10 @@ aggregate_data_by_date<-function(disagg_data, to="monthly", from="daily"){
     dplyr::mutate(period=agg_data %>% dplyr::group_by_at(to_vars) %>% dplyr::select(tidyselect::all_of(to_vars)) %>% dplyr::group_indices()) 
   
   agg_data_covariates=agg_data %>% dplyr::inner_join(
-    disagg_data %>% dplyr::select(-c(period, date_t, Treatment_Period, 
-                              treatperiod_0, post_treat_t, 
-                              r, date_shock, setdiff(agg_ids,to_vars),
+    disagg_data %>%
+      dplyr::select(-c(period, date_t, Treatment_Period, 
+                       treatperiod_0, post_treat_t, r, date_shock, 
+                       setdiff(agg_ids[agg_ids %in% names(disagg_data)],to_vars),
                               new_pitches, total_pitches,
                               y0,y1, y)) %>%
       distinct_at(c("entry",to_vars), .keep_all = T), 
