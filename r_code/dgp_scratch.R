@@ -1,3 +1,134 @@
+#Messing around with IV's and TSCS data
+set.seed(1982)
+N <- 1000 # Number of observations
+T=20
+Treat_Time=T/2
+PX <- 5 # Number of exogenous variables
+errors <- MASS::mvrnorm(N*T, rep(0, 2), rockchalk::lazyCor(X = 0.5, d = 2))
+X_exog <- MASS::mvrnorm(N, rep(0, PX), cor(matrix(rnorm(PX*(PX+5)),PX+5,PX)))
+
+# Instrument
+Z <- sample(0:1, N, T)
+
+time_grid <-tidyr::expand_grid(time = 1:T,
+                               unit = 1:N) %>%
+  dplyr::bind_cols(errors1=errors[,1],errors2=errors[,2]) %>% 
+  dplyr::inner_join(
+    tibble::tibble(time=1:T,time_re=rnorm(T)), by="time") 
+    
+    
+
+# First stage
+unobserved_adoption_driver=rnorm(N, 0,2)
+true_gammas <- rnorm(5, 0, 0.1)
+u <- -0.5 + X_exog %*% true_gammas + 1.5* Z - unobserved_adoption_driver + rnorm(N,0,0.5)
+p <- 1/(1+exp(-u))
+u <- runif(N)
+X_endog <- dplyr::case_when(p > u ~ 1,TRUE ~ 0)
+
+X_tib=tibble(unit=1:N,
+             X1 = X_exog[,1],
+             X2 = X_exog[,2],
+             X3 = X_exog[,3],
+             X4 = X_exog[,4],
+             X5 = X_exog[,5],
+             Z=Z,
+             X_endog=X_endog,
+             Treat_Time=Treat_Time,
+             Unobs=unobserved_adoption_driver) 
+
+fake_data= X_tib %>% 
+  dplyr::inner_join(time_grid, by="unit") %>%
+  dplyr::mutate(X_endog=(time>=Treat_Time)*X_endog,
+                Post=(time>=Treat_Time)) %>%
+  dplyr::group_by(unit) %>%
+  dplyr::mutate(Treated=max(X_endog)) %>%
+  dplyr::ungroup()
+
+X_tib %>% group_by(Z) %>% summarise(Treat_Prob_z0=mean(X_endog))
+X_tib %>% group_by(X_endog) %>% summarise(unobs_mean=mean(Unobs))
+
+
+# Second Stage
+true_deltas <- rnorm(5, 0, 1)
+
+fake_data=fake_data %>% 
+  dplyr::mutate(
+  int=0.2+ (as.matrix(dplyr::select(fake_data, X1:X5)) %*% true_deltas)[,1],
+  Y_outcome=int+0.89*X_endog+1.5*Unobs+rnorm(dplyr::n(),0,0.5)
+)
+
+  
+#saveRDS(synthetic_data, 'synthetic_iv_truth_089.RDS')
+sd_y <- sd(fake_data$Y_outcome)
+
+
+# naive_reg=lm(Y_outcome~X_endog+X1+X2+X3+X4+X5, data=synthetic_data)
+# iv_reg= AER::ivreg(Y_outcome~X_endog+X1+X2+X3+X4+X5|Z+X1+X2+X3+X4+X5, data=synthetic_data)
+
+did_reg=lm(Y_outcome~X_endog+time+(X_endog*time), data=fake_data)
+
+itt <- lm(X_endog ~ Z + X1+X2+X3+X4+X5, data=fake_data %>% 
+            dplyr::filter(time==Treat_Time))
+
+num=lm(Y_outcome ~ Z + X1+X2+X3+X4+X5, data=fake_data %>% 
+               dplyr::filter(time==Treat_Time))
+
+
+#Causal Impact gets it right b/c selection is not time-varying
+aa=estimate_causalimpact_series(fake_data,id_var = "unit", time_var = "time",
+                                         treat_indicator = "X_endog",
+                                         outcome_var = "Y_outcome",
+                                         counterfac_var = NULL)
+
+aa_tot=compute_tot_se_jackknife(aa, time_var = "time", treat_period_var = "Treatment_Period",
+                                     pred_var = "point.pred", outcome_var = "response",
+                                     stat_in = "mean", alpha_ci = 0.95,
+                                     compute_cf_eff = F, counterfac_var = NULL,
+                                     post_treat_only=T)
+
+
+set.seed(1982)
+N <- 10000 # Number of observations
+PX <- 5 # Number of exogenous variables
+errors <- MASS::mvrnorm(N, rep(0, 2), rockchalk::lazyCor(X = 0.5, d = 2))
+X_exog <- MASS::mvrnorm(N, rep(0, PX), cor(matrix(rnorm(PX*(PX+5)), PX+5, PX)))
+
+Z <- sample(0:1, N, T) # Instrument
+# First stage
+true_gammas <- rnorm(5, 0, 0.1)
+u <- -0.5 + X_exog %*% true_gammas + 0.9 * Z + errors[,1]
+p <- 1/(1+exp(-u))
+u <- runif(N)
+X_endog <- dplyr::case_when(p > u ~ 1,
+                            
+                            TRUE ~ 0)
+# Second Stage
+true_deltas <- rnorm(5, 0, 1)
+Y_outcome <- 0.2 + X_exog %*% true_deltas + 0.89 * X_endog + errors[,2]
+  # tibble
+synthetic_data <- tibble::tibble(Y_outcome = Y_outcome,
+                                 
+                                 X_endog = X_endog,
+                                 Z = Z,
+                                 X1 = X_exog[,1],
+                                 X2 = X_exog[,2],
+                                 X3 = X_exog[,3],
+                                 X4 = X_exog[,4],
+                                 X5 = X_exog[,5])
+
+#saveRDS(synthetic_data, 'synthetic_iv_truth_089.RDS')
+sd_y <- sd(synthetic_data$Y_outcome)
+
+naive_reg=lm(Y_outcome~X_endog+X1+X2+X3+X4+X5, data=synthetic_data)
+iv_reg= AER::ivreg(Y_outcome~X_endog+X1+X2+X3+X4+X5|Z+X1+X2+X3+X4+X5, data=synthetic_data)
+
+itt <- lm(X_endog ~ Z + X1+X2+X3+X4+X5, data=synthetic_data)
+
+num=lm(Y_outcome ~ Z + X1+X2+X3+X4+X5, data=synthetic_data)
+
+
+
 #explore why data is lacking overlap where it shouldn't
 load(here::here("Data", "Variations","aa_noisy_factors.RData" ))
 random_data=sample(1:n_seeds,1)
@@ -15,15 +146,6 @@ data_requested %>%
             mean_load5=mean(loading5),
             mean_load6=mean(loading6))
   
-
-
-
-
-
-
-
-
-
 
 
 
@@ -797,17 +919,17 @@ gen_dataaktest <- function(N = 800, N_months = 60, T_freq = c("monthly", "weekly
 }
 
 
-aa_daily_test <- gen_dataaktest(T_freq = "daily", N = 50, N_months = 12, treat_start = 5)
-
+aa_daily_test <- gen_data_lubr(T_freq = "daily", N = 50)
+aa_monthly_test <- gen_data_lubr(N=50)
 
 #Need to recover or recreate the aggregate time var
-aa_monthly_test2 <- aggregate_time(aa_daily_test, from_freq = "daily", to_freq = "monthly")
+aa_monthly_test2 <- aggregate_data_by_date(aa_daily_test)
 aa_monthly_test2 %>%
   group_by(period) %>%
-  summarize(mean_cf = mean(counterfactual), agg_cf = sum(counterfactual))
+  summarize(mean_cf = mean(y0), agg_cf = sum(y0))
 aa_monthly_test %>%
   group_by(period) %>%
-  summarize(mean_cf = mean(counterfactual), agg_cf = sum(counterfactual))
+  summarize(mean_cf = mean(y0), agg_cf = sum(y0))
 
 
 

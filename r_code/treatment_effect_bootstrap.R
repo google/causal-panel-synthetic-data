@@ -1,4 +1,4 @@
-pacman::p_load(dplyr, furrr, stringr, tidyr, tibble)
+pacman::p_load(dplyr, furrr, stringr, tidyr, tibble, resample)
 compute_cf_tot <- function(tib_inp, stat_in_inp,t_var_inp,
                            treat_t_inp, outcome_inp, cf_inp){
   #Helper function to our bootstrap and jackknife procedures, used to compute
