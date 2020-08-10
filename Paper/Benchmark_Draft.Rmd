@@ -6,6 +6,9 @@ output:
   html_document:
     df_print: paged
   word_document: default
+header-includes:
+- \usepackage{pdfpages}
+- \usepackage{tikz}
 ---
 
 ```{r setup, include=FALSE}
@@ -23,7 +26,7 @@ plan(multiprocess, workers=availableCores()-1)
 
 # Introduction
 
-Measuring the causal impact of an intervention has long been a central interest for econometricians, and has more recently become a focus in industry, where large scale experiments are frequently run to inform strategic decisions. In this world, the data often contain a large time series component on the outcome of interest, with few relevant covariates, staggered treatment times, and many more control/donor units than treated. Typical empirical applications rely on panel models such as the Synthetic Control Method - henceforth SCM - (Abadie, Diamond, and Hainmueller, 2010; 2015) which impute the unobserved potential outcome for the treated units and compute the Average Treatment Effect on the Treated (ATT) as the average difference between observed and counterfactual outcomes. 
+Measuring the causal impact of an intervention has long been a central interest for econometricians, and has more recently become a focus in industry, where large scale experiments are frequently run to inform strategic decisions. In this world, the data often contain a large time series component on the outcome of interest, with few relevant covariates, staggered treatment times, and many more control/donor units than treated. Typical empirical applications rely on panel models such as the Synthetic Control Method - henceforth SCM - (Abadie and Gardeazabal, 2003; Abadie, Diamond, and Hainmueller, 2010; 2015) which impute the unobserved potential outcome for the treated units and compute the Average Treatment Effect on the Treated (ATT) as the average difference between observed and counterfactual outcomes. 
 
 The original formulation of SCM predicted counterfactual outcomes as a convex combination of donor units, with weights determined by goodness-of-fit on lagged outcome and auxiliary covariates. However, a number of alternatives have since been proposed, including the introduction of time weights as well as unit weights in Athey et al. (2019)'s SCDID, or Ben-Michael et al (2019)'s bias corrected Augmented Synthetic Control Method (ASCM). More generally, researchers have suggested numerous ways to optimally impute counterfactual outcomes, ranging from Matrix Completion (MC) methods common in computer science (Athey et al. 2018), modeling the outcome as composed of latent factors and estimating these time-varying factors and individual specific loadings (Bai, 2009; Gobillon and Magnac, 2016; Xu, 2017), or using Bayesian Structural Time Series models, as in CausalImpact (Scott and Varian, 2014; Brodersen et al, 2015).
 
@@ -39,17 +42,110 @@ Finally, Gardeazabal and Vega-Bayo (2017) sample from existing data as well as t
 
 Our benchmarking exercise adds to this existing literature in several ways. First, we provide a more expansive set of comparisons relative to existing MC studies by introducing generalized models on a common DGP; SCDID generalizates both Difference-in-differences and SCM; the Gsynth package (Xu, 2017) provides implementations for one or two-way fixed effects, IFE using EM (Gobillon and Magnac, 2016), Matrix Completion (Athey et al 2018), as well as the Gsynth algorithm; CausalImpact covers a large number of time series models under the umbrella of BSTS (including ARIMA models). Second, the flexibility of our DGP allows us to examine each approach under a number of interesting cases. Third, inspired by an expansive literature on forecasting time-series, we provide a simple characterization of the data using time-series features such as ACF and entropy, and analyze whether differences in these features are predictive of differences in methodology performance (Kang et al 2017). Fourth, borrowing from machine learning, we study whether ensembles can provide performance boosts in this context (Hastie et al, 2013; Athey et al, 2019).
 
-The rest of the paper proceeds as follows.  Section \@ref(sec:methods) provides a brief overview of each of the methods we analyze herein, with appropriate references for further information. Section \@ref(sec:dgp) provides an annotated walkthrough our DGP, which serves as the basis for all of our MCMC simulations.
+The rest of the paper proceeds as follows.  Section \@ref(sec:methods) provides a brief overview of each of the methods we analyze herein, with appropriate references for further information. Section \@ref(sec:dgp) provides an annotated walkthrough our DGP, which serves as the basis for all of our MC simulations.
 
 
 # Methods Overview {#sec:methods}
 ## Notation
-Throughout the paper, we refer to individuals as $i \in (1,2,\dots,N)$ and time periods as $t \in (1,2, \dots, T)$. A subset of the $N$ units are treated at varying times, and once treated, remain so for the duration. Thus, each unit can be decomposed into treated ($N_{tr}$) and control ($N_c$) such that $N=N_{tr}+N_c$. The total number of time periods, $T$, can be similarly decomposed into the pre-treatment periods, $t\in(1, 2, \dots, T_0)$, and post-treatment periods ($t \in (T_0+1,T_0+2, \dots, T)$) given the time $T_0+1$ that unit $i$ is first treated. Let $D_{it}$ represent whether unit $i$ received treatment in time $t$, so $D_{it}=1$ if $i \in N_{tr}, t \geq T_{0_i}$, and $0$ otherwise. Potential outcomes for unit $i$ at time $t$ under control and treatment respectively are $Y_{it}(0), Y_{it}(1)$ while observed outcomes are \begin{align*}
+Throughout the paper, we refer to individuals as $i \in (1,2,\dots,N)$ and time periods as $t \in (1,2, \dots, T)$. A subset of the $N$ units are treated at varying times, and once treated, remain so for the duration. Units belong to one of two subsets: treated ($N_{tr}$) and control ($N_c$) units, such that $N=N_{tr}+N_c$. The total number of time periods, $T$, can be similarly decomposed into the pre-treatment periods, $t\in(1, 2, \dots, T_0)$, and post-treatment periods ($t \in (T_0+1,T_0+2, \dots, T)$) given the time $T_0+1$ that unit $i$ is first treated. Let $D_{it}$ represent whether unit $i$ received treatment in time $t$, so $D_{it}=1$ if $i \in N_{tr}$ and $t\geq T_{0_i}$, with $D_{it}=0$ otherwise. Potential outcomes for unit $i$ at time $t$ are $Y_{it}(0), Y_{it}(1)$ for the outcome under control and treatment respectively, while observed outcomes are \begin{align*}
 Y_{it} = \begin{cases}
 Y_{it}(0) &D_{it}=0\\
 Y_{it}(1) &D_{it}=1,
 \end{cases}
 \end{align*} which we can rewrite in the Rubin causal framework as $Y_{it}=(1-D_{it})Y_{it}(0)+D_{it}Y_{it}(1)$ (Rubin, 1974).
+
+Our goal is to estimate the Average Treatment on the Treated (ATT), defined as $ATT_t=\tau_t=E[Y_t(1 | D_{it}=1)-Y_t(0 | D_{it}=1)]$. Because we only observe one potential outcome, our methods impute the missing variable in their various ways to form our estimate, \[\hat{ATT_t}=\sum_{i \in N_{tr}}Y_{it}(1)-\hat{Y}_{it}(0).\] We next describe the ways in which this imputation is computed.
+
+## Generalized Synthetic Control (Gsynth)
+
+Proposed by Xu (2017), Gsynth adopts Interactive Fixed Effects (IFE) models to impute $\hat{Y}_{it}(0)$. In particular, they posit that the outcome takes the functional form \[Y_{it}=\tau_{it}D_{it}+x_{it}'\beta+\lambda_i'f_t+\epsilon_{it},\] which is a standard representation of IFE models. Here, we have a ($k\times1$) vector of observable covariates, $x_{it}$, a ($k\times1$) vector of unknown parameters, $\beta=[\beta_1,\dots,\beta_k]'$, an ($r\times1$) vector of unobserved, time-varying, common factors $f_t=[f_{1t}, \dots, f_{rt}]'$ and an ($r\times1$) vector of their individual specific, time constant loadings $\lambda_i=[\lambda_{i1}, \dots, \lambda_{ir}]'$. This factor-loading formulation nests additive time and unit fixed effects, as well as autoregressive components (see Gobillon and Magnac, 2016; Xu, 2017 for more information). 
+
+Because the (potentially heterogeneous) treatment effect enters as an additively separable term, Xu (2017) suggests the following procedure. First, estimate the unknown parameters on the control units ($\hat{\beta}, \hat{\lambda_i},\hat{f_t}$, $i \in N_{c}$). This is done following an algorithm proposed by Bai (2009) for estimating latent factors.^[This algorithm requires additional constraints to identify $\beta, f, \lambda$: first, that factors are normalized and second that they are orthogonal to each other; details in Bai (2003, 2009).] Second, using $(\hat{\beta}, \hat{f_t})$, estimate the loadings for each treated unit by minimizing the MSE of predicted outcomes in the *pre-treatment* periods only, $t\in (1,\dots, T_0), i \in N_{tr}$. Formally, \[\hat{\lambda}_i=\underset{\tilde{\lambda}}{\text{argmin}}(Y^0_{i}-X_i^0\hat{\beta}-\hat{F}^0\tilde{\lambda}_i )'(Y^0_{i}-X_i^0\hat{\beta}-\hat{F}^0\tilde{\lambda}_i ),\] where super-script $0$ denotes the stacked vector of pre-treatment periods for the relevant variable, with $i\in N_{tr}$. Third, impute the counterfactual outcome for treated units in the post-treatment periods by predicting the outcome using $\hat{\beta}, \hat{f_t}$ from step 1 and $\hat{\lambda_i}$ from step 2: \[ \hat{Y}_{it}(0)=x'_{it}\hat{\beta}+\hat{\lambda}_i'\hat{f}_t, ~~i \in N_{tr}, t>T_0+1.\] The resulting estimator for the ATT at time $t> T_0$ is $\hat{ATT}_t=\frac{1}{N_{tr}}\sum_{i \in N_{tr}} Y_{it}(1)-\hat{Y}_{it}(0)$.
+
+According to Xu (2017), this method requires several assumptions for causal identification. Given the functional form, we also require the treated and control units are affected by the same $r$ factors, with $r$ fixed over the duration. Next, a strict exogeneity assumption is introduced -- $\epsilon_{it} \perp \!\!\! \perp D_{js}, x_{js}, \lambda_j, f_s ~\forall i,j,t,s$. While this requires that the error terms for any unit in any period is independent of treatment assignment, observed covariates, and the factors/loadings, it nevertheless allows for the treatment indicator to be correlated with observable or unobservable covariates. Additional assumptions on the error term (weak serial dependence) and regularity conditions are imposed for the consistency of $\beta$, see Xu (2017) for details.
+
+This method has several beneficial features, including the generality of IFE model (factor/loadings combination nest models such as two-way additive fixed effects, and even AR processes) as well as a key computational advantage: unlike SCM methods, the estimator only needs to run once on the control panel to obtain the factors and coefficients, making it faster than competing estimators. As for drawbacks, Xu (2017) suggests that there can be bias problems with few pre-treatment periods (incidental parameter problem), and it relies heavily on the modeling assumptions (the estimator extrapolates as if the factors for treated and control units were the same, when they may not be). 
+
+
+## SCDID
+
+In their paper, Athey et al (2019) present Difference in Difference and the Synthetic Control Method as falling under a unified framework by reformulating SCM as weighted least squares regression. From there,  Synthetic Difference in Differences is a natural extension of the SCM which includes both time-weights and unit-weights (in a multiplicative fashion), as well as unit fixed effects. The key advantage of these additional features is that they yield improved bias properties and a form of double robustness -- the estimator is consistent if either the outcome model is correctly specified or weights are well chosen.
+
+Their example takes the simplest case -- only unit $N$ is treated at time $T$ -- from which they characterize the SCM and DiD estimators in a regression form: 
+\begin{align*}
+            (\hat{\mu},\hat{\alpha},\hat{\beta},\hat{\tau}^{did})&=\underset{\mu,\alpha,\beta,\tau}{\text{argmin}}\sum_i\sum_t(Y_{it}-\mu-\alpha_i-\beta_t-D_{it}\tau)^2\\
+            (\hat{\mu},\hat{\beta},\hat{\tau}^{scm})&=\underset{\mu,\beta,\tau}{\text{argmin}}\sum_i\sum_t(Y_{it}-\mu-\beta_t-D_{it}\tau)^2\hat{\omega}_i^{scm}.\\
+\end{align*}
+
+This allows us to easily see that, while the DiD approach has both time and unit fixed effects, the SCM approach uses only time fixed effects with unit specific weights. Hence, Athey et al (2019) propose extending SCM to include these "missing" unit fixed effects, as well as a modification to the weights
+
+\[(\hat{\mu},\hat{\alpha},\hat{\beta},\hat{\tau}^{scdid})=\underset{\mu,\alpha,\beta,\tau}{\text{argmin}}\sum_i\sum_t(Y_{it}-\mu-\alpha_i-\beta_t-D_{it}\tau)^2\hat{\omega}_i\hat{\lambda}_t. \]
+
+Another way of thinking about these methods is how they impute the missing outcome. DID imputes \[\hat{Y}^{did}_{NT}(0)=\bar{Y}_{nc,t}+(\bar{Y}_{N,t}-\bar{Y}_{n,t})+(\bar{Y}_{n,T}-\bar{Y}_{n,t}),\]  adjusting the mean of the control units pre-treatment outcome by the stable differences over time between control and treated units, and the stable differences over time within the control group. Synthetic control goes one step further by finding weights for each control unit such that this weighted combination of control units tracks the treated unit through time; imputation is now \[\hat{Y}^{scm}_{NT}(0)=\frac{1}{T-1}\sum_{i \in N_c}\sum_{t<T}\hat{\omega}^{scm}Y_{it}+\sum_{i \in N_c}\hat{\omega}^{scm}\left(Y_{iT}- \frac{1}{T-1}\sum_{t<T}Y_{it}  \right)\]. However, this method omits the second bias correction term present in DID -- the stable difference between the treated unit and the weighted control units in the pre-treatment periods. SCDID extends SCM by adding this bias adjustment on pre-treatment differences using weight $\hat{\lambda}^sc$, so that imputation in SCDID follows \[\hat{Y}_{NT}^{scdid}(0)=\hat{Y}_{NT}^{scm}(0)+\sum_{t<T}\hat{\lambda}_t^{scm}\left( Y_{Nt}-\sum_{i \in N_c}\hat{\omega}_i^{scm}Y_{it} \right).\]
+
+More generally, if the outcomes are generated by $Y_{it}=L_{it}+D_{it}\tau+\epsilon_{it}$, the authors propose parameterizing $L_{it}$ as $g(\theta)$ (examples include IFE/Latent Factor models, two-way fixed effects) and estimating the parameters by solving \[\text{argmin}_{\theta} \sum_i \sum_t(Y_{it}-g(\theta)_{it}-\tau D_{it})\hat{\omega}_i\hat{\lambda}_t.\] The weight terms, $\hat{\omega}_i, \hat{\lambda}_t$ emphasize the focus of getting $g(\theta)$ right locally near the treated unit. These weights are assumed non-negative and sum to one (separately within each group). Unit weights are estimated following the standard SCM paradigm, \[\hat{\omega}_i=\text{argmin}_{\omega}\sum_{t<T}(\sum_{i\in N_c}\omega_iY_{it}-Y_{Nt})^2 + \gamma||\omega||_2,\] with the  $L_2$ norm imposed on the weights to introduce sparsity (which is helpful for interpretation as well as the asymptotic properties). Time weights -- the novelty of this appraoch compared to SCM -- are estimated as \[\hat{\lambda}_t=\text{argmin}_{\lambda}\sum_{i\in N_c}(\sum_{t<T}\lambda_t Y_{it}-Y_{iT})^2.\]
+
+In terms of assumptions, Athey et al (2019) provide a qualitative description: the estimator assumes that weights exist such that the average treated unit and the weighted average of the controls satisfy a parallel trends assumption for the averaged post-treatment period and the weighted average of the pre-treatment periods. This serves to relax the DiD assumption of parallel trends for all time periods and units. More formally, the main assumption is that there exists a deterministc **L** such $Y_{it}=L_{it}+D_{it}\tau+\epsilon_{it}$, where $\epsilon_{it}\sim \mathcal{N}(0,\sigma^2)$ for each  $(i,t)$.
+
+As described in their framework, one of they key advantages of this approach is the double robustness type property, which yields improved bias properties relative to SCM and DiD. Moreover, the introduction of the time weights helps to capture time series patterns in the data -- for instance, a quarterly seasonality could be captured by increasing the importance of the outcome four periods ago. However, this approach maintains the SCM convexity assumptions on the weights, namely that they be positive and sum to one, a potentially unnecessary assumption which precludes the use of information from negatively correlated time series.^[I've seen this mentioned in either the ASCM or the rSCM papers, but want to make sure this is accurate.]
+
+
+
+## Causal Impact
+
+Introduced by Brodersen et al(2015), Causal Imapct is a fully Bayesian time-series methodology for estimating the causal effect in the settings we consider. Specifically, this approach treats the post-treatment counterfactual outcomes (of the treated units) as unobservable random variables and estimates these by using information from 1) patterns identified in the pre-treatment time series of the treated unit, 2) relationships between control series and the treated series, and 3) covariate series, if applicable. Because the time series approach is build off of Bayesian Structural Time Series (Scott and Varian, 2014), models can become quite complicated and are very flexible, with the ability to nest all ARIMA models. 
+
+As described in Brodersen et al (2015), the authors differ from the DID and SCM framework in their explicit choice to select donor time series based purely on their explanatory power. Specifically, they do not restrict weights on these variables to be a convex combination, and constrain model complexity via regularization priors. This distinction, as well as the ability to learn from the treated series of the treated unit, are major benefits of this appraoch. However, this reliance on the time-series structure necessitates more pre-treatment periods in order to provide value. Lastly, there does not seem to be a way to compute the Causal Impact for more than one treated series at a time, slowing computation dramatically. 
+
+## Matrix Completion
+
+Matrix Completion is a method common among computer scientists and statisticians in which missing matrix entries are imputed under a typical assumption of MCAR (missing completely at random). Athey et al (2018) make a slight alteration to these methods by allowing data to be missing according to particular patterns, and show how these patterns relate to the literature on SCM and matching with unconfoundedness. To see this, take **Y** as our $N \times T$ matrix of potential outcomes without treatment (typical element $Y_{it}(0)$); all units have an observed value in the pre-treatment period but only control units have an observed value in the post-treatment periods. 
+
+\[ Y_{match}=  \begin{pmatrix}
+    \checkmark & \checkmark & \dots & \checkmark &  \checkmark \\
+    \checkmark & \checkmark & \dots & \checkmark & \checkmark\\
+    \checkmark & \checkmark & \dots & \checkmark & ?\\
+    \vdots & \vdots & \ddots & \vdots & \vdots \\
+    \checkmark & \checkmark & \dots & \checkmark & ?\\
+  \end{pmatrix} \]
+\[  Y_{scm}=
+  \begin{pmatrix}
+  \checkmark & \checkmark & \dots & \checkmark &  \checkmark \\
+    \checkmark & \checkmark & \dots & \checkmark & \checkmark\\
+    \vdots & \vdots & \ddots & \vdots & \vdots \\
+        \checkmark & \checkmark & \dots & \checkmark & \checkmark\\
+    \checkmark & ? & \dots & ? & ?\\
+  \end{pmatrix}
+\]
+
+
+
+We can think of datasets suited to matching estimators as those like $Y_{matching}$, where we would typically compute a **horizontal** regression by imputing the missing outcomes using a regression of the final period outcomes on lagged outcomes (perhaps weighting the control units that look most like the treated). On the other end of the spectrum, data like $Y_{scm}$ -- where we are missing several post-treatment period outcomes for a single treated unit -- are typically evaluated with **vertical** regression by imputing missing outcomes based on a regression of the treated unit's pre-treatment outcomes on the controls (essentially finding pre-treatment weights that best predict the treated unit, and extrapolating through time). Matrix completion can then be thought of as a framework that discerns which of these two (or other) shapes the $Y$ matrix takes and, given this pattern, imputes the missing outcomes in the most appropriate way.
+
+Formally, the MC problem without covariates is set up as $Y=L^*+\epsilon$, where each matrix is $(N\times T)$, $E[\epsilon|L^*]=0$, and the goal is to estimate $L^*$. The key assumption is Matrix Unconfoundedness, which is to say that $D  \perp \!\!\! \perp \epsilon | L$, where $D$ is the matrix with element $D_{it} \in (0,1)$ indicating whether the potential outcome $Y_{it}(0)$ is observed. The proposed estimator in Athey et al (2018) is \[ \hat{L}=\underset{L}{\text{argmin}} \frac{1}{|\mathcal{O}|} \sum_{(i,t)\in \mathcal{O}} (Y_{it}-L_{it})^2+\lambda_L ||L||_*, \]
+
+where $\mathcal{O}$ is a collections of observed indices ($i,j$), with Nuclear Norm \[||L||_{*}=\sum_i\sigma_i(L)\], where $\sigma_i(L)$ are the singular values of L. To solve this problem, the authors first define a few additional terms. 
+
+
+First, we let
+\begin{align*}
+P_{\mathcal{O}}(A)_{it} = \begin{cases}
+A_{it} &(i,t)\in \mathcal{O}\\
+0 &(i,t)\not\in \mathcal{O}.
+\end{cases}
+ \qquad
+P_{\mathcal{O}}^{\perp}(A)_{it} = \begin{cases}
+A_{it} &(i,t)\not\in \mathcal{O}\\
+0 &(i,t)\in \mathcal{O}.
+\end{cases}
+\end{align*}
+
+Next, define a matrix shrinkage operator  \[\text{shrink}_{\lambda}(A)=S\tilde{\Sigma} R^{'}\], where the right hand side represents the SVD of A, and shrinkage is applied via $\tilde{\Sigma}$ by replacing $\sigma_i(A)=\text{max}(\sigma_i(A)-\lambda,0)$. Initialize $L_1(\lambda,\mathcal{O})=P_{\mathcal{O}}(Y)$ (or the 0 matrix), and compute \[L_{k+1}(\lambda,\mathcal{O})= \text{shrink}_{\frac{\lambda |\mathcal{O}| }{2} }\left( P_{\mathcal{O}}(Y)+P_{\mathcal{O}}^{\perp}(L_k(\lambda) ) \right)\], until the sequence converges. The limiting matrix serves as the estimator for a given $\lambda$, which is itself estimated via cross validation.^[Take $K$ random subsets of observed indices -- restricting the fraction of observed data in these subsets to be equal to the full data, then find the limiting matrix for a sequence of lambdas, comparing the performance by lambda and $K$.]
+
+
+The authors then go on to present a theorem demonstrating that the SCM and IFE approaches can be viewed as a MC method based on matrix factorization with the same objective function but different restrictions on the factors (see Athey et al, 2018 for details). Thus, this method is quite general and adaptive to the structure of the missing data problem at hand. Practically speaking, the success of this method depends on whether $L$ can be well approximated by a low-rank matrix. Moreover, unlike the SCDID and Gsynth appraoches, the method takes advantage of the pre-treatment period data for the treated units, allowing for extrapolation based on observed structure.^[What are some drawbacks besides "it doesn't work"??]
+
+
 
 # DGP {#sec:dgp}
 
@@ -71,7 +167,7 @@ We allow for a number of treatment assignment mechanisms, such as random assignm
 Furthermore, we allow for varying degrees of heterogeneity in both treatment impact and decay. Our treatment effect $\tau_{it}=\omega_{i}*\delta_{it}$ flexibly covers many cases, including impact decay by setting (for example) $\delta_{it}=\delta_i^{t-T_{0i}}$ -- where $\delta_i$ itself can display heterogeneity -- as well as impact heterogeneity via $\omega_i$. 
 
 ## Implementation Details
-We walk through the details of our DGP code for ease of use. The DGP has a core function that is called with all of the arguments, and then sends much of the work to various helper functions to help keep the flow clear. The following chunk of code details the inputs to the DGP; after verifying the function inputs are feasible, we determine the length of the total time period (which depends on input dates and time frequency) as well as the time when treatment is allowed to begin. We then send the relevant subset of inputs to a helper function which creates the time-invariant (unit level) variables, another relevant subset to a helper creating the time-varying variables (factors), bring the two together to form our unit by time grid, generate the counterfactual outcome process, and add the treatment to the counterfactual. Note that "factor_synthetic_dgp()" generates $lnY^*_{it}(0)=\alpha_i+\rho_ilnY^*_{i,t-1}(0)+F_t\lambda_i'$, which is then supplemented with random (for now, iid) noise to create bootstrap datasets for bias, inference, and coverage estimates.
+We walk through the details of our DGP code for ease of use. The DGP has a core function that is called with all of the arguments, and then sends much of the work to various helper functions to help keep the flow clear. The following chunk of code details the inputs to the DGP; after verifying the function inputs are feasible, we determine the length of the total time period (which depends on input dates and time frequency) as well as the time when treatment is allowed to begin. We then send the relevant subset of inputs to a helper function which creates the time-invariant (unit level) variables, another relevant subset to a helper creating the time-varying variables (factors), bring the two together to form our unit by time grid, generate the counterfactual outcome process, and add the treatment to the counterfactual. Note that "factor_synthetic_dgp()" generates \[lnY^*_{it}(0)=\alpha_i+\rho_ilnY^*_{i,t-1}(0)+F_t\lambda_i'\] which is then supplemented with random (for now, iid) noise to create bootstrap datasets for bias, inference, and coverage estimates.
 
 
 ```{r core_dgp_fun, eval=FALSE}
@@ -973,7 +1069,21 @@ rm(base1_100, base1, base2)
 # Preliminary Results of MC Experiments
 To compare the relevant methods under our aforementioned DGP, we take a draw of $Y^*$ under the desired parameters and generate $M$ draws of noise -- forming $M$ datasets with $Y_m=Y*+\epsilon_m$. Each $Y_m$ provides us $N_{tr}$ individual treatment effect series, over which we jackknife the $\hat{ATT}$ and its $1-\alpha/2$ confidence interval (for a given post-treatment time period).^[A more complete implementation, which we hope to have available soon, uses Chernozhukov et al (2019)'s exact conformal inference for this type of data instead of the jackknife for the confidence intervals.]  Once we have obtained $\hat{ATT}$ estimates for each of the $M$ draws of noise, we can compute a number of important metrics to compare across methods: 1) coverage of the confidence interval, by counting the percentage of $M$ for which the true ATT lies within the jackknifed bounds; 2) the bias, by applying the jackknife over the $M$ draws on the mean of $\hat{ATT_m}-ATT$; 3) the variance of $\hat{ATT}$, which we jackknife; 4) RMSE, which we compute by jackknifing the mean of $(Y_{it}-Y^*_{it})^2$ for post treatment $t$ and taking the square root.
 
-## DGP 1: High ACF, Intercept Selection
+We also introduce an ensemble estimator similar to that described in Athey et al (2019). Given the dataset, we create a placebo by identifying the $N_{tr}$ control series that are the best match for our treated units (without replacement and in an $L2$ distance sense); the remaining unmatched controls serve as the placebo donors to our matched placebo treated units. Each of the placebo treated units is assigned a treatment period based on its corresponding treated unit, but no placebo impact is generated (ie regardless of the true treatment effect, there is no impact in this constructed data). We then re-estimate our candidate methods using this constructed data to form predictions in the relevant post-periods, and find the weighted combination of these methods that minimizes the sum of squared residuals. We allow the option for an intercept (included in the examples below) as well as optional constraints on the weights -- namely that they should be positive and sum to 1.^[We currently model these constraints jointly using quadratic programming -- thus, you may either enforce both constraints or let both fluctuate.] Finally, we apply these weights to the estimates from the original dataset and define these as our ensemble predictions, with associated metrics following the standard definitions above.
+
+A comprehensive list of DGP variations is included in the appendix, along with graphs of the bias, graphs of overlap and tables depicting the similarity of the time series by treatment, and tables comparing the methods by coverage, RMSE, and bias over the first 4 post-treatment periods. Overall, Gsynth seems to be the clear winner, displaying robustness to variations in the autocorrelation factor, the amount of noise in each time series, selection based on factor-loadings, as well as heterogeneity of both treatment impact and treatment decay. The Matrix Completion method from the Gsynth pacakge performs noticeably worse than the other methods in the presence of a correlation between loadings and treatment assignment.^[The stark drop in performance makes me wonder if there is a bug in my implementation -- perhaps the default hyperparameters are not adequate?]. 
+
+SCDID and Causal Impact perform similarly across the variations, with slight sensitivity to selection as well as the noisiness of the data for SCDID and low autocorrelation for Causal Impact. These performance sensitivies mostly show up in the variations without treatment effects, and predominantly in the form of overly narrow confidence intervals. Interestingly, these problems do not manifest much in the variations with treatment effects; there, SCDID and Causal Impact tend to be more robust to selection, and often have overly conservative confidence intervals (at least for the first period or two). In addition, SCDID is more likely to have a (slight) negative bias in situations where Gsynth/MC/Causal Impact have positive bias. 
+
+
+
+
+
+# Appendix
+
+\includepdf[pages=-,pagecommand={},width=\textwidth]{dgp_variation_results.pdf}
+
+## DGP Highlight 1: High ACF, Intercept Selection
 Our first comparison involves a placebo DGP with high autocorrelation in the outcome process, and varying amounts of selection, as demonstrated in the R code below.^[To be clear, we assign treatment randomly across the units in both processes, but in our selection condition here, we shift the mean of the intercept $\alpha_i$ down for control units compared to treatment units.] We set the total number of time periods to be 121 months, and include a total number of 200 entries, 80 of whom are treated. The key difference is in the value of "intercept_scale" -- there are no shifts to the mean of the intercept distribution in the first process, but the mean is shifted down by 0.75 for control units in the second. Note that in setting the same seed for the DGPs (both in terms of $Y*$ and $\{\epsilon_m\}$), we home in on the impact of shifting said intercept.^[We also rescale the output so that it is roughly lognormal around a mean of 9.]
 
 ```{r dgp-1, eval=FALSE}
@@ -1136,355 +1246,6 @@ causalimpact_AA_sel_bias_plot
 ```
 
 
-## DGP 2: Low ACF, Intercept Selection
-Our next comparison makes one slight change to DGP 1 -- namely, we reduce the ACF in the outcome process from $\rho=0.9$ to $\rho=0.1$. The coverage here is much closer to the nominal 95% we expect, seems more stable for SCDID compared to Gsynth/MC/CausalImpact, and hardly differs when selection is introduced. By RMSE, gsynth and MC perform almost identically -- both superior to SCDID and CausalImpact regardless of selection. Interestingly, the bias here is slightly negative for three of our estimators (gsynth, SCDID, MC) while CausalImpact has a larger and positive bias; unlike the prior DGP, bias seems to be much more robust to the introduction of selection. SCDID performs quite well on this metric, similar to MC, but the differences are again quite small.
-
-```{r dgp-2, eval=FALSE}
-AA_data_no_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
-                                         first_treat="2017-07-01",
-                                         date_end="2020-01-01",
-                                         num_entries=200,
-                                         prop_treated=0.25,
-                                         treat_impact_sd = 0, 
-                                         treat_impact_mean = 0, 
-                                         rho=0.1,
-                                         rescale_y_mean = 2.5e3,
-                                         cov_overlap_scale = 0,
-                                         seed=42)
-
-AA_data_no_sel_unformatted=furrr::future_map(.x=seeds, 
-                                             .f=~noisify_draw(
-                                               data_inp=AA_data_no_sel_base,
-                                               seed=.x))
-
-
-
-
-AA_data_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
-                                      first_treat="2017-07-01",
-                                      date_end="2020-01-01",
-                                      num_entries=200,
-                                      prop_treated=0.25,
-                                      treat_impact_sd = 0, 
-                                      treat_impact_mean = 0, 
-                                      rho=0.1,
-                                      rescale_y_mean = 2.5e3,
-                                      cov_overlap_scale = 0,
-                                      intercept_scale = 0.75,
-                                      seed=42)
-
-
-AA_data_sel_unformatted=furrr::future_map(.x=seeds, 
-                                          .f=~noisify_draw(
-                                            data_inp=AA_data_sel_base,
-                                            seed=.x))
-```
-
-```{r low-acf-data-tab, echo=FALSE}
-load(here("Data/Cloud_AA_ACF_50.RData"))
-#Create long form data for each metric
-coverage_tib=gsynth_AA_cov %>% 
-    dplyr::mutate(selection="No", method="gsynth") %>%
-    dplyr::bind_rows(
-        gsynth_AA_sel_cov %>% 
-            dplyr::mutate(selection="Yes", method="gsynth")) %>%
-    dplyr::bind_rows(
-        scdid_AA_cov %>% 
-            dplyr::mutate(selection="No", method="scdid"))%>%
-    dplyr::bind_rows(
-        scdid_AA_sel_cov %>% 
-            dplyr::mutate(selection="Yes", method="scdid"))%>%
-    dplyr::bind_rows(
-        mc_AA_cov %>% 
-            dplyr::mutate(selection="No", method="mc"))%>%
-    dplyr::bind_rows(
-        mc_AA_sel_cov %>% 
-            dplyr::mutate(selection="Yes", method="mc")) %>%
-  dplyr::bind_rows(
-        causalimpact_AA_cov %>% 
-            dplyr::mutate(selection="No", method="causalimp")) %>%
-  dplyr::bind_rows(
-        causalimpact_AA_sel_cov %>% 
-            dplyr::mutate(selection="Yes", method="causalimp")) %>%
-  dplyr::mutate(metric="coverage", metric_value=coverage_abs)%>%
-  dplyr::select(post_period_t,metric, method, selection, metric_value)
-
-
-
-rmse_tib=gsynth_overall_metrics %>% 
-  dplyr::mutate(selection="No", method="gsynth") %>%
-    dplyr::bind_rows(
-        gsynth_sel_overall_metrics %>% 
-            dplyr::mutate(selection="Yes", method="gsynth")) %>%
-    dplyr::bind_rows(
-        scdid_AA_overall_metrics %>% 
-            dplyr::mutate(selection="No", method="scdid"))%>%
-    dplyr::bind_rows(
-        scdid_AA_sel_overall_metrics %>% 
-            dplyr::mutate(selection="Yes", method="scdid"))%>%
-    dplyr::bind_rows(
-        mc_AA_overall_metrics %>% 
-            dplyr::mutate(selection="No", method="mc"))%>%
-    dplyr::bind_rows(
-        mc_AA_sel_overall_metrics %>% 
-            dplyr::mutate(selection="Yes", method="mc")) %>%
-  dplyr::bind_rows(
-        causalimpact_AA_overall_metrics %>% 
-            dplyr::mutate(selection="No", method="causalimp"))%>%
-    dplyr::bind_rows(
-        causalimpact_AA_sel_overall_metrics %>% 
-            dplyr::mutate(selection="Yes", method="causalimp")) %>%
-  dplyr::mutate(metric="rmse", metric_value=jackknife_rmse)%>%
-  dplyr::select(post_period_t,metric, method, selection, metric_value)
-
-bias_tib=gsynth_AA_bias %>% 
-  dplyr::mutate(selection="No", method="gsynth") %>%
-    dplyr::bind_rows(
-        gsynth_AA_sel_bias %>% 
-            dplyr::mutate(selection="Yes", method="gsynth")) %>%
-    dplyr::bind_rows(
-        scdid_AA_bias %>% 
-            dplyr::mutate(selection="No", method="scdid"))%>%
-    dplyr::bind_rows(
-        scdid_AA_sel_bias %>% 
-            dplyr::mutate(selection="Yes", method="scdid"))%>%
-    dplyr::bind_rows(
-        mc_AA_bias %>% 
-            dplyr::mutate(selection="No", method="mc"))%>%
-    dplyr::bind_rows(
-        mc_AA_sel_bias %>% 
-            dplyr::mutate(selection="Yes", method="mc")) %>%
-  dplyr::bind_rows(
-        causalimpact_AA_bias %>% 
-            dplyr::mutate(selection="No", method="causalimp"))%>%
-    dplyr::bind_rows(
-        causalimpact_AA_sel_bias %>% 
-            dplyr::mutate(selection="Yes", method="causalimp")) %>%
-  dplyr::mutate(metric="bias", metric_value=jackknife_abs_bias) %>%
-  dplyr::select(post_period_t, metric,metric_value, method, selection)
-
-#combine the metrics into one long form tibble, #spread the long form to wide
-metrics_tib=coverage_tib %>%
-  dplyr::bind_rows(rmse_tib) %>%
-  dplyr::bind_rows(bias_tib) %>%
-  pivot_wider(names_from = c( selection,method ), values_from=metric_value) %>%
-  dplyr::select(tidyselect::contains("No"), tidyselect::contains("Yes"),
-                dplyr::everything())
-
-#Alternatively, to group by method then selection
- #pivot_wider(names_from = c( method, selection ), values_from=metric_value) 
-
-metrics_tib %>%
-  gt::gt(rowname_col = "post_period_t", groupname_col = "metric") %>%
-    gt::tab_header(
-        title = md("Metrics by Method"),
-        subtitle = md("Rho=0.1")
-    ) %>%
-    gt::tab_source_note(md("Notes:")) %>%
-   gt::tab_spanner_delim(delim = "_", columns=setdiff(names(metrics_tib), c("post_period_t", "metric") )) %>% 
-  tab_stubhead(label = "Selection") %>% 
-  gt::fmt_number(columns=dplyr::everything(), decimals = 3)
-
-```
-
-```{r low-acf-bias, echo=F, fig.show="hold", out.width="50%", fig.cap="Bias Estimates"}
-
-gsynth_sel_bias_plot
-
-scdid_AA_sel_bias_plot
-
-mc_AA_sel_bias_plot
-
-causalimpact_AA_sel_bias_plot
-
-```
-
-
-
-
-## DGP 3: High ACF, Loading Selection
-For our third DGP, we focus on the selection mechanism by reverting the ACF to 0.9 (as in DGP 1) and shifting the factor loadings distribution rather than the intercept. Specifically, after randomly assigning the treatment we assign the factor loadings as coming from either the same distribution ($\lambda_i\sim\beta(2, 2)$) (no selection) or different distributions (with overlap) 
-
-\begin{align*}
-\lambda_{i} \sim \begin{cases}
-\beta(2-0.75, 2) &D_{i}=0\\
-\beta(2, 2-0.75) &D_{i}=1.
-\end{cases}
-\end{align*}
-
-Coverage once again falls below the 95% nominal level, with performance dropping off quite drastically under this form of selection as compared to intercept selection. Without selection, the results should look much the same as under DGP 1, and they generally do.^[Question: Shouldn't they be identical, in fact? What could be happening?] Performance on RMSE actually looks somewhat better under loading selection compared to no selection, though the magnituide of the differences is again small. The estimators, however, are much more biased under this selection process -- as much as 50% worse in fact, but hovering closer to 20% or 30% typically. As in the first DGP, MC seems to perform better than the other methods across the metrics, and is reliably more robust to selection than the others to boot.
-
-
-```{r dgp-3, eval=FALSE}
-AA_data_no_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
-                                         first_treat="2017-07-01",
-                                         date_end="2020-01-01",
-                                         num_entries=200,
-                                         prop_treated=0.25,
-                                         treat_impact_sd = 0, 
-                                         treat_impact_mean = 0, 
-                                         rho=0.9,
-                                         rescale_y_mean = 2.5e3,
-                                         cov_overlap_scale = 0,
-                                         seed=42)
-
-AA_data_no_sel_unformatted=furrr::future_map(.x=seeds, 
-                                             .f=~noisify_draw(
-                                               data_inp=AA_data_no_sel_base,
-                                               seed=.x))
-
-
-AA_data_sel_base=factor_synthetic_dgp(date_start="2010-01-01",
-                                      first_treat="2017-07-01",
-                                      date_end="2020-01-01",
-                                      num_entries=200,
-                                      prop_treated=0.25,
-                                      treat_impact_sd = 0, 
-                                      treat_impact_mean = 0, 
-                                      rho=0.9,
-                                      rescale_y_mean = 2.5e3,
-                                      cov_overlap_scale = 0,
-                                      loading_scale = 0.75,
-                                      seed=42)
-
-
-AA_data_sel_unformatted=furrr::future_map(.x=seeds, 
-                                          .f=~noisify_draw(
-                                            data_inp=AA_data_sel_base,
-                                            seed=.x))
-```
-
-```{r loadings-data-tab, echo=FALSE}
-load(here("Data/Cloud_AA_Loadings_50.RData"))
-#Create long form data for each metric
-coverage_tib=gsynth_AA_cov %>% 
-    dplyr::mutate(selection="No", method="gsynth") %>%
-    dplyr::bind_rows(
-        gsynth_AA_sel_cov %>% 
-            dplyr::mutate(selection="Yes", method="gsynth")) %>%
-    dplyr::bind_rows(
-        scdid_AA_cov %>% 
-            dplyr::mutate(selection="No", method="scdid"))%>%
-    dplyr::bind_rows(
-        scdid_AA_sel_cov %>% 
-            dplyr::mutate(selection="Yes", method="scdid"))%>%
-    dplyr::bind_rows(
-        mc_AA_cov %>% 
-            dplyr::mutate(selection="No", method="mc"))%>%
-    dplyr::bind_rows(
-        mc_AA_sel_cov %>% 
-            dplyr::mutate(selection="Yes", method="mc")) %>%
-  dplyr::bind_rows(
-        causalimpact_AA_cov %>% 
-            dplyr::mutate(selection="No", method="causalimp")) %>%
-  dplyr::bind_rows(
-        causalimpact_AA_sel_cov %>% 
-            dplyr::mutate(selection="Yes", method="causalimp")) %>%
-  dplyr::mutate(metric="coverage", metric_value=coverage_abs)%>%
-  dplyr::select(post_period_t,metric, method, selection, metric_value)
-
-
-
-rmse_tib=gsynth_overall_metrics %>% 
-  dplyr::mutate(selection="No", method="gsynth") %>%
-    dplyr::bind_rows(
-        gsynth_sel_overall_metrics %>% 
-            dplyr::mutate(selection="Yes", method="gsynth")) %>%
-    dplyr::bind_rows(
-        scdid_AA_overall_metrics %>% 
-            dplyr::mutate(selection="No", method="scdid"))%>%
-    dplyr::bind_rows(
-        scdid_AA_sel_overall_metrics %>% 
-            dplyr::mutate(selection="Yes", method="scdid"))%>%
-    dplyr::bind_rows(
-        mc_AA_overall_metrics %>% 
-            dplyr::mutate(selection="No", method="mc"))%>%
-    dplyr::bind_rows(
-        mc_AA_sel_overall_metrics %>% 
-            dplyr::mutate(selection="Yes", method="mc")) %>%
-  dplyr::bind_rows(
-        causalimpact_AA_overall_metrics %>% 
-            dplyr::mutate(selection="No", method="causalimp"))%>%
-    dplyr::bind_rows(
-        causalimpact_AA_sel_overall_metrics %>% 
-            dplyr::mutate(selection="Yes", method="causalimp")) %>%
-  dplyr::mutate(metric="rmse", metric_value=jackknife_rmse)%>%
-  dplyr::select(post_period_t,metric, method, selection, metric_value)
-
-bias_tib=gsynth_AA_bias %>% 
-  dplyr::mutate(selection="No", method="gsynth") %>%
-    dplyr::bind_rows(
-        gsynth_AA_sel_bias %>% 
-            dplyr::mutate(selection="Yes", method="gsynth")) %>%
-    dplyr::bind_rows(
-        scdid_AA_bias %>% 
-            dplyr::mutate(selection="No", method="scdid"))%>%
-    dplyr::bind_rows(
-        scdid_AA_sel_bias %>% 
-            dplyr::mutate(selection="Yes", method="scdid"))%>%
-    dplyr::bind_rows(
-        mc_AA_bias %>% 
-            dplyr::mutate(selection="No", method="mc"))%>%
-    dplyr::bind_rows(
-        mc_AA_sel_bias %>% 
-            dplyr::mutate(selection="Yes", method="mc")) %>%
-  dplyr::bind_rows(
-        causalimpact_AA_bias %>% 
-            dplyr::mutate(selection="No", method="causalimp"))%>%
-    dplyr::bind_rows(
-        causalimpact_AA_sel_bias %>% 
-            dplyr::mutate(selection="Yes", method="causalimp")) %>%
-  dplyr::mutate(metric="bias", metric_value=jackknife_abs_bias) %>%
-  dplyr::select(post_period_t, metric,metric_value, method, selection)
-
-#combine the metrics into one long form tibble, #spread the long form to wide
-metrics_tib=coverage_tib %>%
-  dplyr::bind_rows(rmse_tib) %>%
-  dplyr::bind_rows(bias_tib) %>%
-  pivot_wider(names_from = c( selection,method ), values_from=metric_value) %>%
-  dplyr::select(tidyselect::contains("No"), tidyselect::contains("Yes"),
-                dplyr::everything())
-
-#Alternatively, to group by method then selection
- #pivot_wider(names_from = c( method, selection ), values_from=metric_value) 
-
-metrics_tib %>%
-  gt::gt(rowname_col = "post_period_t", groupname_col = "metric") %>%
-    gt::tab_header(
-        title = md("Metrics by Method"),
-        subtitle = md("Rho=0.9, Loading Shift")
-    ) %>%
-    gt::tab_source_note(md("Notes:")) %>%
-   gt::tab_spanner_delim(delim = "_", columns=setdiff(names(metrics_tib), c("post_period_t", "metric") )) %>% 
-  tab_stubhead(label = "Selection") %>% 
-  gt::fmt_number(columns=dplyr::everything(), decimals = 3)
-
-```
-
-```{r loadings-bias, echo=F, fig.show="hold", out.width="50%", fig.cap="Bias Estimates"}
-
-gsynth_sel_bias_plot
-
-scdid_AA_sel_bias_plot
-
-mc_AA_sel_bias_plot
-
-causalimpact_AA_sel_bias_plot
-
-```
-
-
-## Notes about Variations
-
-Seem to do a terrible job on "aa_high_acf_loading_shift" -- the bias is quite high at 0.4 and the coverage is abysmal as 0.15.
-
-This is also seen in "aa_noisy_factors_load_shift" -- which is a similar DGP just with extra factors. Coverage is better here, but bias is still quite high.
-
-Gsynth, MC, and Causal Impact all seem to be highly correlated -- or at least incredibly similar in their bias properties. SCDID is most unique in the plots.
-
-With the AB -- interesting that most methods (especially causal impact) do slightly better on ab_impact_het_loading_shift relative to ab_impact_het (the former=the latter plus selection via loadings). This is also true when we combine impact and decay het -- the selected datasets do mostly fine with bias, but the estimators are quite poor without selection... Also true without any heterogeneity...
-
-Decay heterogeneity leads to quite poor estimates -- less bad without selection in Post Treat 0 but steadily gets worse over time.
 
 
 

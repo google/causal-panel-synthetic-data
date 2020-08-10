@@ -1,3 +1,735 @@
+pacman::p_load(dplyr, furrr, tidyr, stats,
+               caret, glmnet, bigstatsr)
+
+
+
+
+
+
+
+#' Using nearest neighbour method to do the prediction.
+#'
+#' @param y a vector of history values.
+#' @param ct.m sparse matrix of all the histories.
+#' @param treatperiod treat period of the given entry.
+#' @param neighbour.method method for prediction once the list of neighbours
+#'   are found. "median" skips zero entries when computing the median;
+#'   "mean" used mean of the neighbours, "none" disables scaling.
+#' @param neighbour.weighting boolean value of weighting option. If "TRUE",
+#'   more recent history is weighted higher using linear weight. If
+#'   "FALSE", no weight is used.
+#' @param scaling.option if "centered", we use the standard scaling to treat
+#'   histories: (x-mean(x))/std(x); if "mean", we use x/mean(x). If
+#'   "none", no scaling is used.
+#' @param neighbour.periods maximum number of periods used for prediction.
+#' @return A vector with prediction values that also include fit of
+#'   pre-treatment periods.
+#' @export
+NearestNeighbourPrediction <- function(y,
+                                       ct.m,
+                                       treatperiod,
+                                       num.neighbours = 8,
+                                       neighbour.method =
+                                         c("median", "mean"),
+                                       neighbour.weighting = TRUE,
+                                       scaling.option =
+                                         c("centered", "mean", "none"),
+                                       neighbour.periods = 20,
+                                       allow.zero.start = FALSE,
+                                       trend.upper.bound = 20) {
+  neighbour.method <- match.arg(neighbour.method)
+  scaling.option <- match.arg(scaling.option)
+  
+  # Start period starts from non-zero period.
+  if (!allow.zero.start) {
+    start.period <- min(which(y > 0))
+  } else {
+    start.period <- 1
+  }
+  if (length(y) - start.period > neighbour.periods) {
+    start.period <- length(y) - neighbour.periods
+  }
+  y <- y[seq(from = start.period, to = length(y), by = 1)]
+  if (sum(y) == 0) {
+    pred <- rep(0, nrow(ct.m))
+    return(pred)
+  }
+  x <- ct.m[seq(from = start.period, to = (treatperiod - 1), by = 1), ]
+  
+  # Make sure there is no zero-sum rows
+  col.sumx <- colSums(x)
+  x <- x[, which(col.sumx > 0)]
+  ct.m <- ct.m[, which(col.sumx > 0)]
+  
+  # Scale the histories if needed.
+  yx <- cbind(y, x)
+  if (scaling.option == "centered") {
+    yx <- scale(cbind(y, x))
+  } else if (scaling.option == "mean") {
+    yx <- t(t(yx) / colSums(yx)) * nrow(yx)
+  }
+  yx[, which(is.na(yx[1, ]))] <- 0
+  
+  # Set the weights for distance calculation.
+  if (neighbour.weighting) {
+    weights <- seq_len(nrow(yx))
+  } else {
+    weights <- rep(1, nrow(yx))
+  }
+  distance <- colSums(((yx[, seq(from = 2, to = ncol(yx), by = 1)]
+                        - yx[, 1]) * weights)^2)
+  
+  # id <- order(distance)[seq_len(num.neighbours)]
+  # Modification: We choose 1.5 times as many neighbours but only use those
+  # with closest volume
+  id.init <- order(distance)[seq_len(floor(num.neighbours * 1.5))]
+  xx <- ct.m[seq(from = start.period, to = (treatperiod - 1), by = 1), id.init]
+  yxx <- cbind(y, xx)
+  distance <- colSums((yxx[, seq(from = 2, to = ncol(yxx), by = 1)]
+                       - yxx[, 1])^2)
+  id <- id.init[order(distance)[seq_len(num.neighbours)]]
+  
+  # All the secret sauces
+  if (scaling.option == "centered") {
+    z.var <- apply(x[, id], 2, var)
+    z.id <- which(z.var == 0)
+    if (length(z.id) > 0) z.var[which(z.var == 0)] <- 1
+    z <- t(t(ct.m[, id] - matrix(rep(colMeans(x[, id]),
+                                     each = nrow(ct.m)
+    ), nrow = nrow(ct.m))) /
+      sqrt(z.var))
+  } else if (scaling.option == "mean") {
+    deno <- colSums(ct.m[seq(
+      from = start.period, to = (treatperiod - 1),
+      by = 1
+    ), id])
+    # Apply an upper bound on the trends to prevent blowup
+    z <- mean(y) * nrow(yx) * apply(
+      t(t(ct.m[, id]) / deno), c(1, 2),
+      function(x) {
+        return(min(x, trend.upper.bound))
+      }
+    )
+  } else {
+    z <- t(t(ct.m[, id]))
+  }
+  
+  # Estimate the predicted values using different method.
+  # Skip zero period when computing median.
+  if (neighbour.method == "mean") {
+    pred <- apply(z, 1, mean)
+  } else if (neighbour.method == "median") {
+    tmedian <- function(x) {
+      if (sum(x) == 0) {
+        return(0)
+      }
+      return(median(x[x != 0]))
+    }
+    pred <- apply(z, 1, tmedian)
+  }
+  
+  # Scale the prediction back.
+  if (scaling.option == "centered") {
+    pred <- pred * sqrt(var(y)) + mean(y)
+  }
+  
+  if (start.period > 1) {
+    pred[seq_len(start.period - 1)] <- 0
+  }
+  return(pred)
+}
+
+#' Generate prediction for seasonal entry.
+#'
+#' @param y a vector of history values before treatment.
+#' @param ct.m matrix with time series entries
+#' @param treatperiod treatment period.
+#' @param num.periods total period length that includes both history and
+#'   prediction.
+#' @param frequency frequency of the seasonality.
+#' @param neighbour.method method for prediction once the list of neighbours
+#'   are found. "median" skips zero entries when computing the median;
+#'   "mean" used mean of the neighbours, "none" desables scaling.
+#' @param neighbour.weighting boolean value of weighting option. If "TRUE",
+#'   more recent history is weighted higher using linear weight. If
+#'   "FALSE", no weight is used.
+#' @param scaling.option if "centered", we use the standard scaling to treat
+#'   histories: (x-mean(x))/std(x); if "mean", we use x/mean(x). If
+#'   "none", no scaling is used.
+#' @param neighbour.periods maximum number of periods used for prediction.
+#' @param max.pretreatment.period maximum number of periods used for seasonal
+#'   prediction.
+#' @return A vector of prediction values.
+#' @export
+SeasonalPrediction <- function(y,
+                               ct.m,
+                               treatperiod,
+                               num.periods,
+                               frequency,
+                               num.neighbours,
+                               neighbour.method,
+                               neighbour.weighting = TRUE,
+                               scaling.option,
+                               neighbour.periods,
+                               max.pretreatment.period) {
+  original.y <- y
+  start.period <- min(which(y > 0))
+  if (length(y) - start.period > max.pretreatment.period) {
+    start.period <- length(y) - max.pretreatment.period
+  }
+  y <- y[seq(from = start.period, to = length(y), by = 1)]
+  if (sum(y) == 0) {
+    return(rep(0, num.periods))
+  }
+  
+  # If the history is shorter than 2 frequency cycles or there are zero history
+  # periods, use airline model. Otherwise we apply stl to de-seasonalize the
+  # history into trend and seasonal components. We use nearest neighbour method
+  # to get the trend prediction and then multiply the seasonality back.
+  if (length(y) < 2 * frequency || min(y) <= 0) {
+    fit <- try(forecast::Arima(ts(y),
+                     order = c(0, 1, 1),
+                     seasonal = list(
+                       order = c(0, 1, 1),
+                       period = frequency,
+                       lambda = 0
+                     )
+    ), silent = TRUE)
+    
+    # The fitted values or ARIMA model is the one-step forecast.
+    if (class(fit) != "try-error") {
+      pred <- c(fitted(fit), forecast::forecast(fit,
+                                      h = num.periods - treatperiod + 1
+      )$mean)
+      if (start.period > 1) {
+        pred <- c(original.y[seq_len(start.period - 1)], pred)
+      }
+    } else {
+      pred <- NearestNeighbourPrediction(y,
+                                         ct.m,
+                                         treatperiod,
+                                         num.neighbours = num.neighbours,
+                                         neighbour.method = neighbour.method,
+                                         neighbour.weighting =
+                                           neighbour.weighting,
+                                         scaling.option = scaling.option,
+                                         neighbour.periods =
+                                           neighbour.periods
+      )
+    }
+  } else {
+    fit.stl <- try(stats::stl(ts(log(y), frequency = frequency), "per"), silent = TRUE)
+    if (class(fit.stl) == "try-error") {
+      pred <- NearestNeighbourPrediction(y,
+                                         ct.m,
+                                         treatperiod,
+                                         num.neighbours = num.neighbours,
+                                         neighbour.method = neighbour.method,
+                                         neighbour.weighting =
+                                           neighbour.weighting,
+                                         scaling.option = scaling.option,
+                                         neighbour.periods =
+                                           neighbour.periods
+      )
+    } else {
+      detrend.y <- exp(fit.stl$time.series[, 2] + fit.stl$time.series[, 3])
+      season <- exp(fit.stl$time.series[, 1])
+      pred <- NearestNeighbourPrediction(detrend.y,
+                                         ct.m,
+                                         treatperiod,
+                                         num.neighbours = num.neighbours,
+                                         neighbour.method = neighbour.method,
+                                         neighbour.weighting =
+                                           neighbour.weighting,
+                                         scaling.option = scaling.option,
+                                         neighbour.periods =
+                                           neighbour.periods
+      )
+      pred <- pred * season[mod(seq_len(length(pred)) - 1, frequency) + 1]
+    }
+  }
+  return(pred)
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#AK implementation of doudchenko Imbens style estimators
+
+flexible_scm <- function(data_full, id_var = "entry", time_var = "period", treat_indicator = "treatperiod_0", outcome_var = "target",
+                         counterfac_var = "counter_factual"){
+  tr_entries <- data_full %>%
+    dplyr::filter(!!as.name(treat_indicator) > 0) %>%
+    dplyr::distinct(!!as.name(id_var)) %>%
+    dplyr::pull() %>%
+    sort()
+  ct_entries <- setdiff(data_full %>% dplyr::distinct(!!as.name(id_var)) %>% dplyr::pull(), tr_entries)
+  
+  
+  # create control data frame, with a new id for the sake of ordering observations later
+  control_data <- data_full %>% dplyr::filter(!!as.name(id_var) %in% ct_entries)
+
+
+  treat_data <- data_full %>%
+    dplyr::filter(!!as.name(id_var) %in% tr_entries) %>%
+    dplyr::arrange(!!as.name(time_var), !!as.name(id_var)) %>%
+    dplyr::group_by(!!as.name(id_var)) %>%
+    dplyr::mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
+    dplyr::ungroup()
+  
+  
+  # create the control matrix once, which is an input to sdid estimator
+  #NxT
+  control_matrix <- tidyr::spread(
+    control_data %>% dplyr::select(!!as.name(time_var), !!as.name(id_var), !!as.name(outcome_var)),
+    !!as.name(time_var), !!as.name(outcome_var)
+  ) %>%
+    dplyr::select(-!!as.name(id_var)) %>%
+    as.matrix() %>%
+    t()
+  
+  split_treat_data_pre <- treat_data %>% 
+    dplyr::filter(!!as.name(time_var)<Treatment_Period) %>%
+    dplyr::select(tidyselect::all_of(c(id_var, outcome_var))) %>%
+    dplyr::group_by(!!as.name(id_var)) %>%
+    dplyr::group_split( .keep = F) %>%
+    lapply(., function(x) x %>% dplyr::pull())
+
+    # for each treated unit, find when it was treated
+  list_of_treat_times <- treat_data %>%
+    split(.[[id_var]]) %>%
+    lapply(., function(x) {
+      x %>% dplyr::select(Treatment_Period) %>% dplyr::slice(1) %>% dplyr::pull()
+    })
+  
+  list_inputed_y=furrr::future_map2(.x=split_treat_data_pre,
+                                    .y=list_of_treat_times,
+                                    .f=~scm_imputation(treat_data = .x,
+                                                   control_mat = control_matrix,
+                                                   treat_time = .y) )
+  
+  flex_scm_series=Map(dplyr::bind_cols, treat_data %>% split(.[[id_var]]),
+                      lapply(list_inputed_y, function(x){
+                        return(tibble::tibble("point.pred"=x))
+                      } )) %>% 
+    dplyr::bind_rows() %>% 
+    dplyr::rename(response=!!as.name(outcome_var)) %>%
+    dplyr::mutate(point.effect = response - point.pred)
+
+    if (!is.null(counterfac_var)) {
+    flex_scm_series <- flex_scm_series %>%
+      dplyr::mutate(
+        cf_point.effect = (response - !!as.name(counterfac_var)),
+        cf_pct.effect = (response / !!as.name(counterfac_var)) - 1
+      )
+  }
+  
+  # add a column with relative (pct) effect
+  flex_scm_series <- flex_scm_series %>% 
+    dplyr::mutate(pct.effect = (response / point.pred) - 1 ) %>%
+    dplyr::select(tidyselect::all_of(c(time_var, id_var,"point.pred" ,"response",
+                                       "Treatment_Period", "point.effect", 
+                                       counterfac_var,"cf_point.effect",
+                                       "cf_pct.effect", "pct.effect"))) %>%
+    dplyr::arrange(!!as.name(time_var), !!as.name(id_var))
+  
+}
+
+scm_imputation <- function(treat_data, control_mat, treat_time){
+  #define the control data matrix
+  control_pre=control_mat[seq_len(treat_time-1),]
+  #fit a speedy Cross-Model Selection and Averaging Grid for ENP
+  fit_enp = bigstatsr::big_spLinReg(bigstatsr::as_FBM(control_pre), 
+                                    treat_data, alphas = c(1e-4,0.2,0.5,0.8,1), 
+                                    warn = F)
+  
+  #summary(fit_enp, best.only=T)
+  imputed_y=predict(fit_enp, bigstatsr::as_FBM(control_mat))
+  return(imputed_y)
+}
+
+
+
+flexible_sdid <- function(data_full, id_var = "entry", time_var = "period", treat_indicator = "treatperiod_0", outcome_var = "target",
+                         counterfac_var = "counter_factual"){
+  tr_entries <- data_full %>%
+    dplyr::filter(!!as.name(treat_indicator) > 0) %>%
+    dplyr::distinct(!!as.name(id_var)) %>%
+    dplyr::pull() %>%
+    sort()
+  ct_entries <- setdiff(data_full %>% dplyr::distinct(!!as.name(id_var)) %>% dplyr::pull(), tr_entries)
+  
+  
+  # create control data frame, with a new id for the sake of ordering observations later
+  control_data <- data_full %>% dplyr::filter(!!as.name(id_var) %in% ct_entries)
+  
+  
+  treat_data <- data_full %>%
+    dplyr::filter(!!as.name(id_var) %in% tr_entries) %>%
+    dplyr::arrange(!!as.name(time_var), !!as.name(id_var)) %>%
+    dplyr::group_by(!!as.name(id_var)) %>%
+    dplyr::mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
+    dplyr::ungroup()
+  
+  
+  # create the control matrix once, which is an input to sdid estimator
+  #NxT
+  control_matrix <- tidyr::spread(
+    control_data %>% dplyr::select(!!as.name(time_var), !!as.name(id_var), !!as.name(outcome_var)),
+    !!as.name(time_var), !!as.name(outcome_var)
+  ) %>%
+    dplyr::select(-!!as.name(id_var)) %>%
+    as.matrix() %>%
+    t()
+  
+  split_treat_data_pre <- treat_data %>% 
+    dplyr::filter(!!as.name(time_var)<Treatment_Period) %>%
+    dplyr::select(tidyselect::all_of(c(id_var, outcome_var))) %>%
+    dplyr::group_by(!!as.name(id_var)) %>%
+    dplyr::group_split( .keep = F) %>%
+    lapply(., function(x) x %>% dplyr::pull())
+  
+  # for each treated unit, find when it was treated
+  list_of_treat_times <- treat_data %>%
+    split(.[[id_var]]) %>%
+    lapply(., function(x) {
+      x %>% dplyr::select(Treatment_Period) %>% dplyr::slice(1) %>% dplyr::pull()
+    })
+  
+  browser()
+  #gonna need weights from this method
+  #Then, need time weights (similar regression except now the outcome var
+  # is the first Treatment Period for each control unit, and the we predict using
+  #all the past values for that particular unit?)
+  list_inputed_y=furrr::future_map2(.x=split_treat_data_pre,
+                                    .y=list_of_treat_times,
+                                    .f=~scm_weights(treat_data = .x,
+                                                    control_mat = control_matrix,
+                                                    treat_time = .y) )
+  
+  
+  flex_scm_series=Map(dplyr::bind_cols, treat_data %>% split(.[[id_var]]),
+                      lapply(list_inputed_y, function(x){
+                        return(tibble::tibble("point.pred"=x))
+                      } )) %>% 
+    dplyr::bind_rows() %>% 
+    dplyr::rename(response=!!as.name(outcome_var)) %>%
+    dplyr::mutate(point.effect = response - point.pred)
+  
+  if (!is.null(counterfac_var)) {
+    flex_scm_series <- flex_scm_series %>%
+      dplyr::mutate(
+        cf_point.effect = (response - !!as.name(counterfac_var)),
+        cf_pct.effect = (response / !!as.name(counterfac_var)) - 1
+      )
+  }
+  
+  # add a column with relative (pct) effect
+  flex_scm_series <- flex_scm_series %>% 
+    dplyr::mutate(pct.effect = (response / point.pred) - 1 ) %>%
+    dplyr::select(tidyselect::all_of(c(time_var, id_var,"point.pred" ,"response",
+                                       "Treatment_Period", "point.effect", 
+                                       counterfac_var,"cf_point.effect",
+                                       "cf_pct.effect", "pct.effect"))) %>%
+    dplyr::arrange(!!as.name(time_var), !!as.name(id_var))
+  
+}
+
+
+
+
+scm_weights <- function(treat_data, control_mat, treat_time){
+  #define the control data matrix
+  control_pre=control_mat[seq_len(treat_time-1),]
+  #fit a speedy Cross-Model Selection and Averaging Grid for ENP
+  fit_enp = bigstatsr::big_spLinReg(bigstatsr::as_FBM(control_pre), 
+                                    treat_data, alphas = c(1e-4,0.2,0.5,0.8,1), 
+                                    warn = F)
+  
+  #summary(fit_enp, best.only=T)
+  imputed_y=predict(fit_enp, bigstatsr::as_FBM(control_mat))
+  return(imputed_y)
+}
+
+
+
+
+
+
+
+
+############################################
+# Functions to create a placebo dataset,
+# assigning treatment based on matching.
+###########################################
+nearest_ts_euclidean <- function(ts_tomatch, ts_rest) {
+  # Helper function for matching_without_replacement
+  # Measures the euclidean distance between ts_tomatch
+  # and each of the rows in the tibble ts_rest.
+  
+  # Args
+  # ts_tomatch: treated time series tibble, rows identify ID and columns Time
+  # ts_rest: donor time series tibble, rows identify ID and columns Time.
+  
+  # Output
+  # Vector of indices indicating the row in ts_rest that are best match
+  # (min L2 norm distance) to the row in ts_tomatch.
+  # (Vector length equal to number of rows in ts_tomatch, ie treated entries)
+  # If ts_tomatch has more than 1 entry, the matching is done with replacement
+  # (multiple treated can have the same match).
+  
+  return(apply(ts_tomatch, 1, function(ts_tomatch) {
+    which.min(
+      apply(
+        ts_rest, 1, function(ts_rest, ts_tomatch) {
+          stats::dist(rbind(ts_rest, ts_tomatch))
+        },
+        ts_tomatch
+      )
+    )
+  }))
+}
+
+
+matching_without_replacement <- function(treated_block,
+                                         control_block,
+                                         id_var,
+                                         treat_period) {
+  # finds the nearest match for each treated unit (treated_block)
+  # among the donor pool (control_block) without replacement by calling helper
+  # to nearest_ts_euclidean.
+  
+  # Args
+  # treated_block: treated time series tibble, rows are ID and columns Time
+  # control_block: donor time series tibble, rows are ID and columns Time.
+  
+  # Output
+  # df_toreturn, a tibble containing a column for the placebo-treated unit 
+  # ID numbers, the treated unit it was the nearest match to, 
+  # and the time that treated unit was actually
+  # treated (num_rows of the dataframe equal to num_rows of treated_block).
+  
+  # initialize an empty vector for the donor IDs that match
+  already_matched <- c()
+  # Store the time of treatment and treated ID for the true treated units
+  placebo_treat_period <- treated_block %>% dplyr::pull(tidyselect::all_of(treat_period))
+  treatment_unit <- treated_block %>% dplyr::pull(!!as.name(id_var))
+  for (i in seq_len(nrow(treated_block))) {
+    #Find nearest euclidean match among unmatched controls for 
+    #each treated observation
+    temp_match <- nearest_ts_euclidean(
+      treated_block %>%
+        dplyr::slice(i) %>%
+        dplyr::select(-tidyselect::all_of(c(id_var,treat_period))),
+      control_block %>%
+        dplyr::filter(!!as.name(id_var) %in% setdiff(!!as.name(id_var), 
+                                                     already_matched)) %>% 
+        dplyr::select(-tidyselect::all_of(id_var)))
+    #Update the vector of already matched donors
+    already_matched[i] <- control_block %>%
+      dplyr::filter(!!as.name(id_var) %in% 
+                      setdiff(!!as.name(id_var), already_matched)) %>%
+      dplyr::slice(temp_match) %>%
+      dplyr::pull(!!as.name(id_var))
+  }
+  # Store the resulting vectors in a tibble for output
+  df_toreturn <- tibble::tibble(temp_id = already_matched, 
+                                temp_treattime = placebo_treat_period, 
+                                Treatment_Unit = treatment_unit)
+  
+  return(df_toreturn %>% 
+           dplyr::rename(!!as.name(id_var) := temp_id,
+                         !!as.name(treat_period) := temp_treattime))
+}
+
+
+
+#attempting to match based on TS features and compare the performance (seems worse)
+#TODO(alexdkellogg): account for multiple treatments, treatment end dates
+create_placebo_df <- function(data_full, id_var = "entry",
+                              time_var = "period", 
+                              treat_indicator = "treatperiod_0",
+                              outcome_var = "target", 
+                              counterfac_var = "counter_factual",
+                              match_type="feature") {
+  # Generates a placebo tibble, using matching methods to select
+  # placebo-treated entries as those most similar to truly-treated.
+  
+  # Args
+  # data_full: long-form dataframe with both treated and control entries.
+  #            rows of the df represent period-entry combinations 
+  #            (eg N (total num of entry) rows for period t).
+  #            each row should have a treatment indicator (treat_indicator), 
+  #            a period number (time_var),
+  #            an individual ID (id_var), and an outcome (outcome_var)
+  #            for associated with that period-ID combination
+  # id_var: column name of numeric, unique ID representing the entry (unit)
+  # time_var:column name of numeric period number indicating the time period, 
+  #          in increasing order (eg 0 is the first time, 120 is the last)
+  # treat_indicator:column name of binary (0, 1) indicator for whether id_var i 
+  #                 in time_var t was treated. 
+  #                 Once treated, must always be treated.
+  
+  
+  # Output
+  # placebo_df_long, a tibble of the same format as data_full, entirely
+  # consisting of donor units, some of which are placebo-treated 
+  # (based on matching).
+  
+  # Split the dataset based on whether the unit is ever treated
+  tr_entries <- data_full %>%
+    dplyr::filter(!!as.name(treat_indicator) > 0) %>%
+    dplyr::distinct(!!as.name(id_var)) %>%
+    dplyr::pull()
+  
+  ct_entries <- setdiff(data_full %>%
+                          dplyr::distinct(!!as.name(id_var)) %>%
+                          dplyr::pull(), tr_entries)
+  # Create a dataframe pf the subset of control units
+  cd <- data_full %>% dplyr::filter(!!as.name(id_var) %in% ct_entries)
+  cd <- merge(
+    cd,
+    data.frame(
+      entry = ct_entries,
+      rank = seq_along(ct_entries)
+    )
+  )
+  
+  # Pivot the long cd dataframe to wide. Each row will represent an id_var, 
+  #with columns for the outcome_var at each time period
+  cd_for_match <- tidyr::pivot_wider(
+    data = cd %>%
+      dplyr::arrange(!!as.name(time_var), !!as.name(id_var)),
+    names_from = !!as.name(time_var),
+    id_cols = c(!!as.name(id_var)),
+    values_from = c(!!as.name(outcome_var))
+  )
+  
+  # Store treated data in a tibble
+  treated_to_match <- data_full %>%
+    dplyr::filter(!!as.name(id_var) %in% tr_entries)
+  
+  #Create a variable indicating the time treatment is assigned by unit
+  treated_to_match <- treated_to_match %>%
+    dplyr::group_by(!!as.name(id_var)) %>%
+    dplyr::mutate(
+      Treatment_Period =
+        length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1
+    ) %>%
+    dplyr::ungroup()
+  
+  # for pivoting, potential issues arise if we have several time varying 
+  # covariates -- added as TODO.
+  # we'd have to take the values_from each of them, 
+  #and for any constant args we'd presumably have to add them to id_cols
+  #Pivot the data wide, so each row has all the time series data for 
+  #a given unit.
+  data_wide_m <- tidyr::pivot_wider(
+    data = treated_to_match,
+    names_from = !!as.name(time_var),
+    id_cols = c(!!as.name(id_var), Treatment_Period),
+    values_from = c(!!as.name(outcome_var))
+  ) # %>% as.matrix()
+  
+  
+  list_of_ts <- data_full %>%
+    dplyr::select(!!as.name(id_var), !!as.name(outcome_var)) %>%
+    split(.[[id_var]]) %>%
+    furrr::future_map(~ .[[outcome_var]]) %>%
+    furrr::future_map(~ stats::ts(.))
+  df_feat <- tsfeatures::tsfeatures(list_of_ts) %>% 
+    dplyr::mutate(!!as.name(id_var):=seq_len(dplyr::n())) 
+  
+  treated_ts_features= df_feat %>%
+    dplyr::filter(!!as.name(id_var) %in% tr_entries) %>%
+    dplyr::left_join(
+      treated_to_match %>%
+        dplyr::select(tidyselect::all_of(c(id_var, "Treatment_Period"))) %>%
+        dplyr::distinct(), by=c(id_var) )
+  
+  control_ts_features= df_feat %>%
+    dplyr::filter(!!as.name(id_var) %in% ct_entries)
+  
+  if(match_type=="ts"){
+    # Determine control units to assign to placebo treatment group via matching.
+    matched_placebo_df_temp <- matching_without_replacement(data_wide_m, 
+                                                            cd_for_match, 
+                                                            id_var,
+                                                            "Treatment_Period")
+  }
+  
+  if(match_type=="feature"){
+    matched_placebo_df_temp<- matching_without_replacement(treated_ts_features, 
+                                                           control_ts_features, 
+                                                           id_var,
+                                                           "Treatment_Period")
+  }
+
+  return(matched_placebo_df_temp)
+}
+
+
+pair_distance_helper=function(pair_map, data_full){
+  control_series=pair_map %>% 
+    dplyr::select(entry) %>%
+    dplyr::inner_join(data_full, by="entry") %>%
+    dplyr::select(entry, period, target)
+  
+  treatment_series=pair_map %>% 
+    dplyr::select(Treatment_Unit) %>%
+    dplyr::rename(entry="Treatment_Unit") %>%
+    dplyr::inner_join(data_full, by="entry") %>%
+    dplyr::select(entry, period, target) %>%
+    dplyr::rename(treat_unit="entry",
+                  target_treat="target")
+  
+  matched_series=control_series %>%
+    dplyr::left_join(treatment_series, by="period") %>%
+    dplyr::mutate(dif_sq=(target-target_treat)^2)
+  
+  distance_result=matched_series %>%
+    dplyr::summarise(sum_sq_dif=sum(dif_sq)) %>%
+    dplyr::pull()
+  
+  return(distance_result)
+  
+}
+evaluate_matches <- function(data_full, match_map){
+  #PLAN: grab each match pair, turn it into a single dataframe
+  #of series 1 and series2
+  #compute the L2 distance
+  #apply over each row in the mapping
+  
+  split_pairs=match_map %>% split(.[["entry"]])
+  
+  dist_list=furrr::future_map(.x=split_pairs,
+                             .f=~pair_distance_helper(data_full=data_full,
+                                                  pair_map=.x))
+  
+  return(dist_list %>% unlist() %>% sum() )
+}
+
+
+
+
+
 #Messing around with IV's and TSCS data
 set.seed(1982)
 N <- 1000 # Number of observations

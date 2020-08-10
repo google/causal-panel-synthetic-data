@@ -347,19 +347,10 @@ for(data_i in seq_len(length(dataset_names))){
     dplyr::bind_rows(bias_tib) %>%
     tidyr::pivot_wider(names_from = c( method ), values_from=metric_value)
   
-  gridExtra::grid.arrange(
-    gsynth_bias_plot,
-    scdid_bias_plot,
-    mc_bias_plot,
-    causalimpact_bias_plot,
-    nrow = 2,
-    top = paste("Bias by Method: ", data_name,sep=""),
-    bottom = "Notes:")
-  # 
 }
 
 
-make_tables<-function(tib_to_gt_data, datalist){
+make_tables<-function(tib_to_gt_data, datalist, ignore_indiv=F){
   load(here::here("Data", "Variations",datalist ))
   
   data_name=stringr::str_remove(tolower(datalist), ".rdata")
@@ -377,36 +368,40 @@ make_tables<-function(tib_to_gt_data, datalist){
     bottom = "Notes:")
     
     random_data=sample(1:n_seeds,1)
-    indiv_cf_plots_gsynth=lapply(plot_individual_cf(gsynth_est[[random_data]])[c(1,2)],
+    if(!ignore_indiv){
+      indiv_cf_plots_gsynth=lapply(plot_individual_cf(gsynth_est[[random_data]])[c(1,2)],
                                  function(x){
                                    x+ggplot2::labs(caption="Gsynth")
                                  })
-    indiv_cf_plots_scdid=lapply(plot_individual_cf(scdid_est[[random_data]])[c(1,2)],
-                                function(x){
-                                   x+ggplot2::labs(caption="SCDID")
-                                 })
-    indiv_cf_plots_mc=lapply(plot_individual_cf(mc_est[[random_data]])[c(1,2)],
-                             function(x){
-                                   x+ggplot2::labs(caption="MC")
-                                 })
-    indiv_cf_plots_causalimpact=lapply(
-      plot_individual_cf(causalimpact_est[[random_data]])[c(1,2)],
-      function(x){ x+ggplot2::labs(caption="Causal Impact") })
-    indiv_cf_plots_ensemble=lapply(
-      plot_individual_cf(ensemble_est[[random_data]])[c(1,2)],
-      function(x){ x+ggplot2::labs(caption="Ensemble")  })
-    
-    indiv_cf_combined=c(
-      indiv_cf_plots_gsynth,indiv_cf_plots_scdid,indiv_cf_plots_mc,
-      indiv_cf_plots_causalimpact ,indiv_cf_plots_ensemble
+      indiv_cf_plots_scdid=lapply(plot_individual_cf(scdid_est[[random_data]])[c(1,2)],
+                                  function(x){
+                                     x+ggplot2::labs(caption="SCDID")
+                                   })
+      indiv_cf_plots_mc=lapply(plot_individual_cf(mc_est[[random_data]])[c(1,2)],
+                               function(x){
+                                     x+ggplot2::labs(caption="MC")
+                                   })
+      indiv_cf_plots_causalimpact=lapply(
+        plot_individual_cf(causalimpact_est[[random_data]])[c(1,2)],
+        function(x){ x+ggplot2::labs(caption="Causal Impact") })
+      indiv_cf_plots_ensemble=lapply(
+        plot_individual_cf(ensemble_est[[random_data]])[c(1,2)],
+        function(x){ x+ggplot2::labs(caption="Ensemble")  })
+      
+      indiv_cf_combined=c(
+        indiv_cf_plots_gsynth,indiv_cf_plots_scdid,indiv_cf_plots_mc,
+        indiv_cf_plots_causalimpact ,indiv_cf_plots_ensemble
     )
     
     lapply(indiv_cf_combined,print)
+    }
+
     
     gridExtra::grid.arrange(tsfeature_pc_by_treatment_plot(formatted_data[[random_data]])+
       ggplot2::labs(caption = data_name), nrow=1)
     
-    print(tsfeature_by_treat_df(formatted_data[[random_data]]))
+    print(tsfeature_by_treat_df(formatted_data[[random_data]]) %>% 
+            dplyr::select(-c(".y.", group1, group2)))
     
   
   return(tib_to_gt_data %>%
@@ -425,20 +420,20 @@ make_tables<-function(tib_to_gt_data, datalist){
 #won't print properly in lapply
 make_tables(for_gt[[1]], dataset_names[[1]])
 make_tables(for_gt[[2]], dataset_names[[2]])
-# make_tables(for_gt[[3]], dataset_names[[3]])
-# make_tables(for_gt[[4]], dataset_names[[4]])
-# make_tables(for_gt[[5]], dataset_names[[5]])
-# make_tables(for_gt[[6]], dataset_names[[6]])
-# make_tables(for_gt[[7]], dataset_names[[7]])
-# make_tables(for_gt[[8]], dataset_names[[8]])
-# make_tables(for_gt[[9]], dataset_names[[9]])
-# make_tables(for_gt[[10]], dataset_names[[10]])
-# make_tables(for_gt[[11]], dataset_names[[11]])
-# make_tables(for_gt[[12]], dataset_names[[12]])
-# make_tables(for_gt[[13]], dataset_names[[13]])
-# make_tables(for_gt[[14]], dataset_names[[14]])
-# make_tables(for_gt[[15]], dataset_names[[15]])
-# make_tables(for_gt[[16]], dataset_names[[16]])
+make_tables(for_gt[[3]], dataset_names[[3]])
+make_tables(for_gt[[4]], dataset_names[[4]])
+make_tables(for_gt[[5]], dataset_names[[5]])
+make_tables(for_gt[[6]], dataset_names[[6]])
+make_tables(for_gt[[7]], dataset_names[[7]])
+make_tables(for_gt[[8]], dataset_names[[8]])
+make_tables(for_gt[[9]], dataset_names[[9]])
+make_tables(for_gt[[10]], dataset_names[[10]])
+make_tables(for_gt[[11]], dataset_names[[11]])
+make_tables(for_gt[[12]], dataset_names[[12]])
+make_tables(for_gt[[13]], dataset_names[[13]])
+make_tables(for_gt[[14]], dataset_names[[14]])
+make_tables(for_gt[[15]], dataset_names[[15]])
+make_tables(for_gt[[16]], dataset_names[[16]])
 
 ```
 

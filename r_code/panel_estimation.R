@@ -1,5 +1,5 @@
 pacman::p_load(dplyr, tibble, CausalImpact,gsynth,tidyr,Matrix, quadprog,
-               janitor, stats,readr)
+               janitor, stats,readr,bigstatsr)
 
 
 ############################################
@@ -587,4 +587,101 @@ estimate_scdid_series <- function(data_full,
   )
   
   return(df_scdid_series)
+}
+
+
+
+
+flexible_scm <- function(data_full, id_var = "entry", time_var = "period", treat_indicator = "treatperiod_0", outcome_var = "target",
+                         counterfac_var = "counter_factual"){
+  tr_entries <- data_full %>%
+    dplyr::filter(!!as.name(treat_indicator) > 0) %>%
+    dplyr::distinct(!!as.name(id_var)) %>%
+    dplyr::pull() %>%
+    sort()
+  ct_entries <- setdiff(data_full %>% dplyr::distinct(!!as.name(id_var)) %>% dplyr::pull(), tr_entries)
+  
+  
+  # create control data frame, with a new id for the sake of ordering observations later
+  control_data <- data_full %>% dplyr::filter(!!as.name(id_var) %in% ct_entries)
+  
+  
+  treat_data <- data_full %>%
+    dplyr::filter(!!as.name(id_var) %in% tr_entries) %>%
+    dplyr::arrange(!!as.name(time_var), !!as.name(id_var)) %>%
+    dplyr::group_by(!!as.name(id_var)) %>%
+    dplyr::mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
+    dplyr::ungroup()
+  
+  
+  # create the control matrix once, which is an input to sdid estimator
+  #NxT
+  control_matrix <- tidyr::spread(
+    control_data %>% dplyr::select(!!as.name(time_var), !!as.name(id_var), !!as.name(outcome_var)),
+    !!as.name(time_var), !!as.name(outcome_var)
+  ) %>%
+    dplyr::select(-!!as.name(id_var)) %>%
+    as.matrix() %>%
+    t()
+  
+  split_treat_data_pre <- treat_data %>% 
+    dplyr::filter(!!as.name(time_var)<Treatment_Period) %>%
+    dplyr::select(tidyselect::all_of(c(id_var, outcome_var))) %>%
+    dplyr::group_by(!!as.name(id_var)) %>%
+    dplyr::group_split( .keep = F) %>%
+    lapply(., function(x) x %>% dplyr::pull())
+  
+  # for each treated unit, find when it was treated
+  list_of_treat_times <- treat_data %>%
+    split(.[[id_var]]) %>%
+    lapply(., function(x) {
+      x %>% dplyr::select(Treatment_Period) %>% dplyr::slice(1) %>% dplyr::pull()
+    })
+  
+  list_inputed_y=furrr::future_map2(.x=split_treat_data_pre,
+                                    .y=list_of_treat_times,
+                                    .f=~scm_imputation(treat_data = .x,
+                                                       control_mat = control_matrix,
+                                                       treat_time = .y) )
+  
+  flex_scm_series=Map(dplyr::bind_cols, treat_data %>% split(.[[id_var]]),
+                      lapply(list_inputed_y, function(x){
+                        return(tibble::tibble("point.pred"=x))
+                      } )) %>% 
+    dplyr::bind_rows() %>% 
+    dplyr::rename(response=!!as.name(outcome_var)) %>%
+    dplyr::mutate(point.effect = response - point.pred)
+  
+  if (!is.null(counterfac_var)) {
+    flex_scm_series <- flex_scm_series %>%
+      dplyr::mutate(
+        cf_point.effect = (response - !!as.name(counterfac_var)),
+        cf_pct.effect = (response / !!as.name(counterfac_var)) - 1
+      )
+  }
+  
+  # add a column with relative (pct) effect
+  flex_scm_series <- flex_scm_series %>% 
+    dplyr::mutate(pct.effect = (response / point.pred) - 1 ) %>%
+    dplyr::select(tidyselect::all_of(c(time_var, id_var,"point.pred" ,"response",
+                                       "Treatment_Period", "point.effect", 
+                                       counterfac_var,"cf_point.effect",
+                                       "cf_pct.effect", "pct.effect"))) %>%
+    dplyr::arrange(!!as.name(time_var), !!as.name(id_var))
+  
+}
+
+
+
+scm_imputation <- function(treat_data, control_mat, treat_time){
+  #define the control data matrix
+  control_pre=control_mat[seq_len(treat_time-1),]
+  #fit a speedy Cross-Model Selection and Averaging Grid for ENP
+  fit_enp = bigstatsr::big_spLinReg(bigstatsr::as_FBM(control_pre), 
+                                    treat_data, alphas = c(1e-4,0.2,0.5,0.8,1), 
+                                    warn = F)
+  
+  #summary(fit_enp, best.only=T)
+  imputed_y=predict(fit_enp, bigstatsr::as_FBM(control_mat))
+  return(imputed_y)
 }
