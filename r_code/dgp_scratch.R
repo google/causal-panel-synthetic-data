@@ -1,9 +1,90 @@
 pacman::p_load(dplyr, furrr, tidyr, stats,
-               caret, glmnet, bigstatsr)
+               caret, glmnet, bigstatsr, forecast)
 
 
 
 
+flexible_gfoo <- function(data_full, id_var = "entry", time_var = "period", treat_indicator = "treatperiod_0", outcome_var = "target",
+                         counterfac_var = "counter_factual"){
+  tr_entries <- data_full %>%
+    dplyr::filter(!!as.name(treat_indicator) > 0) %>%
+    dplyr::distinct(!!as.name(id_var)) %>%
+    dplyr::pull() %>%
+    sort()
+  ct_entries <- setdiff(data_full %>% dplyr::distinct(!!as.name(id_var)) %>% dplyr::pull(), tr_entries)
+  
+  
+  # create control data frame, with a new id for the sake of ordering observations later
+  control_data <- data_full %>% dplyr::filter(!!as.name(id_var) %in% ct_entries)
+  
+  
+  treat_data <- data_full %>%
+    dplyr::filter(!!as.name(id_var) %in% tr_entries) %>%
+    dplyr::arrange(!!as.name(time_var), !!as.name(id_var)) %>%
+    dplyr::group_by(!!as.name(id_var)) %>%
+    dplyr::mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
+    dplyr::ungroup()
+  
+  
+  # create the control matrix once, which is an input to sdid estimator
+  #NxT
+  control_matrix <- tidyr::spread(
+    control_data %>% dplyr::select(!!as.name(time_var), !!as.name(id_var), !!as.name(outcome_var)),
+    !!as.name(time_var), !!as.name(outcome_var)
+  ) %>%
+    dplyr::select(-!!as.name(id_var)) %>%
+    as.matrix() %>%
+    t()
+  
+  split_treat_data_pre <- treat_data %>% 
+    dplyr::filter(!!as.name(time_var)<Treatment_Period) %>%
+    dplyr::select(tidyselect::all_of(c(id_var, outcome_var))) %>%
+    dplyr::group_by(!!as.name(id_var)) %>%
+    dplyr::group_split( .keep = F) %>%
+    lapply(., function(x) x %>% dplyr::pull())
+  
+  # for each treated unit, find when it was treated
+  list_of_treat_times <- treat_data %>%
+    split(.[[id_var]]) %>%
+    lapply(., function(x) {
+      x %>% dplyr::select(Treatment_Period) %>% dplyr::slice(1) %>% dplyr::pull()
+    })
+  
+  
+  list_inputed_y=furrr::future_map2(.x=split_treat_data_pre,
+                                    .y=list_of_treat_times,
+                                    .f=~NearestNeighbourPrediction(y = .x,
+                                                       ct.m = control_matrix,
+                                                       treatperiod = .y) )
+  
+  
+  flex_scm_series=Map(dplyr::bind_cols, treat_data %>% split(.[[id_var]]),
+                      lapply(list_inputed_y, function(x){
+                        return(tibble::tibble("point.pred"=x))
+                      } )) %>% 
+    dplyr::bind_rows() %>% 
+    dplyr::rename(response=!!as.name(outcome_var)) %>%
+    dplyr::mutate(point.effect = response - point.pred)
+  
+  if (!is.null(counterfac_var)) {
+    flex_scm_series <- flex_scm_series %>%
+      dplyr::mutate(
+        cf_point.effect = (response - !!as.name(counterfac_var)),
+        cf_pct.effect = (response / !!as.name(counterfac_var)) - 1
+      )
+  }
+  
+  # add a column with relative (pct) effect
+  flex_scm_series <- flex_scm_series %>% 
+    dplyr::mutate(pct.effect = (response / point.pred) - 1 ) %>%
+    dplyr::select(tidyselect::all_of(c(time_var, id_var,"point.pred" ,"response",
+                                       "Treatment_Period", "point.effect", 
+                                       counterfac_var,"cf_point.effect",
+                                       "cf_pct.effect", "pct.effect"))) %>%
+    dplyr::arrange(!!as.name(time_var), !!as.name(id_var))
+  
+  return(flex_scm_series)
+}
 
 
 
@@ -133,11 +214,13 @@ NearestNeighbourPrediction <- function(y,
     pred <- pred * sqrt(var(y)) + mean(y)
   }
   
-  if (start.period > 1) {
-    pred[seq_len(start.period - 1)] <- 0
-  }
+  # if (start.period > 1) {
+  #   pred[seq_len(start.period - 1)] <- 0
+  # }
   return(pred)
 }
+
+
 
 #' Generate prediction for seasonal entry.
 #'
@@ -255,6 +338,321 @@ SeasonalPrediction <- function(y,
 
 
 
+
+
+#m_mat is a T x R matrix of the nearest neighbors of our target (column is a unit)
+#where each row is a pre-treat period
+
+synthetic_control_weight <- function(m_mat, target, zeta = 1, constrained=T) {
+  if (nrow(m_mat) != length(target)) {
+    stop("invalid dimensions")
+  }
+  
+  # solve.QP cannot have 0 penalty for quadratic term
+  if (zeta == 0) {
+    zeta <- 1e-06
+  }
+  # we solve a QP with parameters [weights, imbalance]
+  # where we use an equality constraint to impose that
+  # imbalance = M * weights - target. Our objective is encoded as
+  # zeta*||weights||^2 + || imbalance ||^2 / length(target)
+  # = [ weights, imbalance]' * [zeta*I, 0; 0, (1/length(target)) I]
+  # * [weights, imbalance] in our call to solve.QP, the parameter
+  # Dmat is this block-diagonal matrix, and we pass dvec=0 because we
+  # have no linear term
+  d_mat <- diag(c(rep(zeta, ncol(m_mat)), rep(1 / length(target), nrow(m_mat))))
+  dvec <- rep(0, ncol(m_mat) + nrow(m_mat))
+  # our first nrow(M)+1 constraints are equality constraints
+  # the first nrow(M) impose that M*weights - imbalance = target
+  # the next imposes that sum(weights)=1
+  # and the remaining constraints impose the positivity of our weights
+  
+  meq <- nrow(m_mat) + as.numeric(constrained)
+  a_t <- cbind(m_mat, diag(1, nrow(m_mat)))
+  
+  if(constrained){
+    a_t=rbind(a_t,
+              c(rep(1, ncol(m_mat)), rep(0, nrow(m_mat))),
+              cbind(diag(1, ncol(m_mat)), matrix(0, ncol(m_mat), nrow(m_mat)))) 
+  }
+  bvec <- target
+  if(constrained){
+    bvec=c(bvec, 1, rep(0, ncol(m_mat)))
+  }
+  
+  soln <- quadprog::solve.QP(d_mat, dvec, t(a_t), bvec, meq = meq)
+  gamma <- soln$solution[seq_len(ncol(m_mat))]
+  
+  return(gamma)
+}
+
+
+
+#' Gets SDID prediction for one treated advertiser and one post treatment
+#' period.
+#'
+#' @param Y the matrix of control entries and one treated entry over all
+#'  time period prior to the treatment period and one post treatment period
+#'  for which the counterfactual prediction is made.
+#' @param T_0 the treatment period.
+#' @param pre_periods Number of periods right before treatment period exlcuded
+#'  from sunthetic control.
+#' @param post_periods Number of periods past adoption used in counterfactual
+#'  prediction. Default = NULL. means all periods after are predicted.
+#' @return a scalar estimate of the counterfactual prediction for one treated
+#'  entry and the specified post treatment periods.
+#' @export
+
+scdid_predict <- function(y_mat, t_0, pre_periods, post_periods, zeta = var(as.numeric(y_mat)),
+                          constrained=T) {
+  
+  # The unit weights are only estimated once, but time weights are estimated
+  # for each period.
+  nn <- nrow(y_mat)
+  pre <- y_mat[nn, ]
+  
+  if (is.null(post_periods)) {
+    post_periods <- ncol(y_mat) - t_0
+  }
+  
+  end_t <- min(ncol(y_mat), t_0 + post_periods)
+  start_t <- max(t_0 - pre_periods, 1)
+  
+  
+  omega_weight <- synthetic_control_weight(t(y_mat[-nn, seq_len(start_t - 1)]), y_mat[nn, seq_len(start_t - 1)], zeta = zeta,
+                                           constrained = constrained)
+  
+  for (t in start_t:end_t) {
+    y_t <- y_mat[, c(seq_len(start_t - 1), t)]
+    tt <- ncol(y_t)
+    lambda_weight <- synthetic_control_weight(y_t[-nn, -tt], y_t[-nn, tt], zeta = zeta,
+                                              constrained = T)
+    sc_transpose_est <- sum(lambda_weight * y_t[nn, -tt])
+    sc_est <- sum(omega_weight * y_t[-nn, tt])
+    interact_est <- omega_weight %*% y_t[-nn, -tt] %*% lambda_weight
+    pre[t] <- sc_est + sc_transpose_est - interact_est
+  }
+  
+  return(pre)
+}
+
+
+
+#' Main function for predictions by NSDID.
+#'
+#' @param y a vector of history values before treatment.
+#' @param ct_mat matrix with time series entries
+#' @param treatperiod treatment period.
+#' @param pre_periods number of periods excluded from training before the
+#'  treatment period.
+#' @param post_periods number of periods for which prediction is done after the
+#'  treatment period. When it is NULL, prediction is done for all periods.
+#' @param nnsize Nearest neighbour size to be selected for each treated entry.
+#'  default value is NULL.
+#' @param scale scaling the entries of the matrix by a constant value to help
+#'  the optimization problem as it often fails to encompass large values (so
+#'  first scale down to smaller values and then after computation scale
+#'  up to large values).
+#' @param period training period as history before treatperiod - period is
+#'  ignored.
+#' @return prediction for the given entry.
+#' @export
+
+nsdid_prediction <- function(y_df, 
+                             ct_mat,
+                             pre_periods = 0,
+                             post_periods = 20,
+                             nnsize = NULL, 
+                             scale = 100, 
+                             period = 52,
+                             constrained=T) {
+  
+  treatperiod <- y_df[1, 2]
+  y <- y_df[1:(treatperiod-1), 1]
+  
+  y_con <- ct_mat / scale
+  nc <- ncol(y_con)
+  np <- nrow(y_con)
+  y_pre <- c(y / scale, rep(0, np - treatperiod + 1))
+  
+  # tv is a linear weight vector. Periods before treatperiod - period use
+  # zero weights.
+  # nnsize neighbours are identified using weighted distances before the
+  # treatment period.
+  
+  start_period <- max(1, (treatperiod - 1) - period - 1)
+  tv <- c(rep(0, start_period), seq_len(np - start_period))
+  tmc <- t(matrix(tv, nrow = nc, ncol = length(tv), byrow = TRUE))
+  wt_y_con <- sqrt(tmc) * y_con
+  wt_y_pre <- sqrt(tv) * y_pre
+  
+  
+  
+  # If nnsize is NULL, the number of the neighbours are chosen to be close
+  # to the number of periods.
+  
+  if (is.null(nnsize)) {
+    nnsize <- treatperiod
+  }
+  
+  y_r <- t(matrix(wt_y_pre, nrow = nc, ncol = np, byrow = TRUE))
+  e <- (y_r[seq_len(treatperiod - 1), ] - wt_y_con[seq_len(treatperiod - 1), ])**2
+  
+  es <- colSums(e)
+  es_order <- order(es)
+  
+  y_input <- cbind(y_con[, es_order[seq_len(min(nnsize, nc))]], y_pre)
+  pred <- scdid_predict(t(y_input), treatperiod, pre_periods = pre_periods, post_periods = post_periods,
+                        constrained = constrained)
+  return(pred * scale)
+}
+
+
+
+
+estimate_scdid_series <- function(data_full,
+                                  id_var = "entry",
+                                  time_var = "period",
+                                  treat_indicator = "treatperiod_0",
+                                  outcome_var = "target",
+                                  counterfac_var = "counter_factual",
+                                  pre_sdid = 0,
+                                  post_sdid = NULL,
+                                  nn_sdid = NULL,
+                                  scale_sdid = 100,
+                                  period_sdid = 30,
+                                  constrained=T) {
+  # Estimates SCDID treatment effects given a long form data set, outputting a dataframe
+  # consisting of a series of treatments effects for each id_var by time_var in all  periods
+  
+  # Args
+  # data_full: long-form dataframe with both treated and control entries, sorted by period and entry (ascending).
+  # id_var: column name of numeric, unique ID representing the entry (unit)
+  # time_var:column name of numeric period number indicating the time period, in increasing order (eg 0 is the first time, 120 is the last)
+  # treat_indicator:column name of binary (0, 1) indicator for whether id_var i in time_var t was treated. Once treated, must always be treated (for now)
+  # outcome_var: the y var for the time series
+  # counterfac_var: the counterfactual value for the time series, if available (otherwise, NULL)
+  # remaining values are from nsdid_prediction function
+  # pre_sdid: number of periods excluded from training before the treatment period.
+  # post_sdid: number of periods for which prediction is done after the treatment period. When it is NULL, prediction is done for all periods.
+  # nn_sdid: Nearest neighbour size to be selected for each treated entry. default value is NULL.
+  # scalesdid: scaling the entries of the matrix by a constant value to help the optimization problem as it often fails to
+  # encompass large values (so first scale down to smaller values and then after computation scale up to large values).
+  # period_sdid: number determining how many pre-treat periods to weight in the estimation (for synthetic control)
+  
+  # Higher level description of data_full:
+  # rows of the df represent period-entry combinations (eg N (total num of entry) rows for period t).
+  # each row should have a treatment indicator (treat_indicator), a period number (time_var),
+  # an individual ID (id_var), and an outcome (outcome_var)
+  # for associated with that period-ID combination
+  
+  
+  # Output
+  # Dataframe containing the full series of the outcome (all T), as well as predicted (counterfactual) outcome
+  # and the associated effects by id_Var, time_var
+  
+  # Split the dataset based on whether they are ever treated
+  tr_entries <- data_full %>%
+    dplyr::filter(!!as.name(treat_indicator) > 0) %>%
+    dplyr::distinct(!!as.name(id_var)) %>%
+    dplyr::pull() %>%
+    sort()
+  ct_entries <- setdiff(data_full %>% dplyr::distinct(!!as.name(id_var)) %>% dplyr::pull(), tr_entries)
+  
+  
+  # create control data frame, with a new id for the sake of ordering observations later
+  control_data <- data_full %>% dplyr::filter(!!as.name(id_var) %in% ct_entries)
+  # n0, number of control entries, is just the number of unique entries in cd
+  n0 <- control_data %>%
+    dplyr::distinct(!!as.name(id_var)) %>%
+    nrow()
+  
+  # In the loop, we also want to compute the SCDID Estimates as they require a single observation at a time
+  # Because SCDID cannot handle staggered adoption, introduce one treated unit at a time
+  # THIS GOES WITHIN Causal Impact For Loop
+  treat_data <- data_full %>%
+    dplyr::filter(!!as.name(id_var) %in% tr_entries) %>%
+    dplyr::mutate(new_id = as.integer(as.factor(!!as.name(id_var))) + n0) %>%
+    dplyr::arrange(!!as.name(time_var), new_id) %>%
+    dplyr::group_by(new_id) %>%
+    dplyr::mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
+    dplyr::ungroup()
+  
+  
+  # create the control matrix once, which is an input to sdid estimator
+  control_matrix <- tidyr::spread(
+    control_data %>% dplyr::select(!!as.name(time_var), !!as.name(id_var), !!as.name(outcome_var)),
+    !!as.name(time_var), !!as.name(outcome_var)
+  ) %>%
+    dplyr::select(-!!as.name(id_var)) %>%
+    as.matrix() %>%
+    t()
+  
+  split_treat_data <- treat_data %>% split(.[[id_var]])
+  
+  # for each treated unit, find when it was treated
+  list_of_treat_times <- split_treat_data %>%
+    lapply(., function(x) {
+      x %>%
+        dplyr::select(Treatment_Period) %>%
+        dplyr::first()
+    })
+  
+  # split the treated units into individual vectors
+  list_of_treat_data <- split_treat_data %>% lapply(., function(x) {
+    x %>%
+      dplyr::select(!!as.name(outcome_var)) %>%
+      as.matrix()
+  })
+  
+  list_inputs <- Map(cbind, list_of_treat_data, list_of_treat_times)
+  
+  list_of_scdid_series <- furrr::future_map(list_inputs, nsdid_prediction, control_matrix, pre_sdid, post_sdid, nn_sdid, scale_sdid, period_sdid, constrained=constrained)
+  
+  
+  # compute the TE by subtracting the matrix of predictions (list_of_scdid_series) from the outcome_var
+  # Reformat so that the output is the same as the other functions, namely,
+  # each row represents a period-unit combination, with the outcome_var, the prediction, the effect (and the treatment time/indicator)
+  df_scdid_series <- list_of_scdid_series %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column(var = time_var) %>%
+    dplyr::mutate(!!as.name(time_var) := as.numeric(!!as.name(time_var))) %>%
+    tidyr::pivot_longer(
+      cols = starts_with("X"),
+      names_to = "temp_id",
+      names_transform = list(temp_id = readr::parse_number),
+      values_to = "point.pred"
+    ) %>%
+    dplyr::rename(!!as.name(id_var) := temp_id) %>%
+    dplyr::inner_join(
+      treat_data %>% 
+        dplyr::select(!!as.name(id_var), !!as.name(time_var), !!as.name(outcome_var), Treatment_Period) %>%
+        dplyr::rename(response = outcome_var),
+      by = c(id_var, time_var)
+    ) %>%
+    dplyr::mutate(point.effect = response - point.pred)
+  
+  
+  if (!is.null(counterfac_var)) {
+    df_scdid_series <- df_scdid_series %>%
+      dplyr::left_join(
+        treat_data %>%
+          dplyr::select(id_var, time_var, counterfac_var),
+        by = c(id_var, time_var)
+      ) %>%
+      dplyr::mutate(
+        cf_point.effect = (response - !!as.name(counterfac_var)),
+        cf_pct.effect = (response / !!as.name(counterfac_var)) - 1
+      )
+  }
+  
+  # add a column with relative (pct) effect
+  df_scdid_series <- df_scdid_series %>% dplyr::mutate(
+    pct.effect = (response / point.pred) - 1
+  )
+  
+  return(df_scdid_series)
+}
 
 
 
@@ -413,14 +811,19 @@ flexible_sdid <- function(data_full, id_var = "entry", time_var = "period", trea
       x %>% dplyr::select(Treatment_Period) %>% dplyr::slice(1) %>% dplyr::pull()
     })
   
-  browser()
+  
+  
+  
+  sdid_weights(treat_data = split_treat_data_pre[[1]],
+               control_mat = control_matrix,
+               treat_time = list_of_treat_times[[1]])
   #gonna need weights from this method
   #Then, need time weights (similar regression except now the outcome var
   # is the first Treatment Period for each control unit, and the we predict using
   #all the past values for that particular unit?)
   list_inputed_y=furrr::future_map2(.x=split_treat_data_pre,
                                     .y=list_of_treat_times,
-                                    .f=~scm_weights(treat_data = .x,
+                                    .f=~sdid_weights(treat_data = .x,
                                                     control_mat = control_matrix,
                                                     treat_time = .y) )
   
@@ -455,8 +858,9 @@ flexible_sdid <- function(data_full, id_var = "entry", time_var = "period", trea
 
 
 
-scm_weights <- function(treat_data, control_mat, treat_time){
+sdid_weights <- function(treat_data, control_mat, treat_time){
   #define the control data matrix
+  browser()
   control_pre=control_mat[seq_len(treat_time-1),]
   #fit a speedy Cross-Model Selection and Averaging Grid for ENP
   fit_enp = bigstatsr::big_spLinReg(bigstatsr::as_FBM(control_pre), 
@@ -467,6 +871,13 @@ scm_weights <- function(treat_data, control_mat, treat_time){
   imputed_y=predict(fit_enp, bigstatsr::as_FBM(control_mat))
   return(imputed_y)
 }
+
+
+
+
+
+
+
 
 
 

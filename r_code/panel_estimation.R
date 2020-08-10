@@ -287,7 +287,7 @@ estimate_gsynth_series <- function(data_full, id_var = "entry", time_var = "peri
 
 
 
-synthetic_control_weight <- function(m_mat, target, zeta = 1) {
+synthetic_control_weight <- function(m_mat, target, zeta = 1, constrained=T) {
   if (nrow(m_mat) != length(target)) {
     stop("invalid dimensions")
   }
@@ -304,22 +304,26 @@ synthetic_control_weight <- function(m_mat, target, zeta = 1) {
   # * [weights, imbalance] in our call to solve.QP, the parameter
   # Dmat is this block-diagonal matrix, and we pass dvec=0 because we
   # have no linear term
-  
   d_mat <- diag(c(rep(zeta, ncol(m_mat)), rep(1 / length(target), nrow(m_mat))))
   dvec <- rep(0, ncol(m_mat) + nrow(m_mat))
-  
   # our first nrow(M)+1 constraints are equality constraints
   # the first nrow(M) impose that M*weights - imbalance = target
   # the next imposes that sum(weights)=1
   # and the remaining constraints impose the positivity of our weights
   
-  meq <- nrow(m_mat) + 1
-  a_t <- rbind(
-    cbind(m_mat, diag(1, nrow(m_mat))),
-    c(rep(1, ncol(m_mat)), rep(0, nrow(m_mat))),
-    cbind(diag(1, ncol(m_mat)), matrix(0, ncol(m_mat), nrow(m_mat)))
-  )
-  bvec <- c(target, 1, rep(0, ncol(m_mat)))
+  meq <- nrow(m_mat) + as.numeric(constrained)
+  a_t <- cbind(m_mat, diag(1, nrow(m_mat)))
+  
+  if(constrained){
+    a_t=rbind(a_t,
+              c(rep(1, ncol(m_mat)), rep(0, nrow(m_mat))),
+              cbind(diag(1, ncol(m_mat)), matrix(0, ncol(m_mat), nrow(m_mat)))) 
+  }
+  bvec <- target
+  if(constrained){
+    bvec=c(bvec, 1, rep(0, ncol(m_mat)))
+  }
+  
   soln <- quadprog::solve.QP(d_mat, dvec, t(a_t), bvec, meq = meq)
   gamma <- soln$solution[seq_len(ncol(m_mat))]
   
@@ -343,7 +347,8 @@ synthetic_control_weight <- function(m_mat, target, zeta = 1) {
 #'  entry and the specified post treatment periods.
 #' @export
 
-scdid_predict <- function(y_mat, t_0, pre_periods, post_periods, zeta = var(as.numeric(y_mat))) {
+scdid_predict <- function(y_mat, t_0, pre_periods, post_periods, zeta = var(as.numeric(y_mat)),
+                          constrained=T) {
   
   # The unit weights are only estimated once, but time weights are estimated
   # for each period.
@@ -358,12 +363,14 @@ scdid_predict <- function(y_mat, t_0, pre_periods, post_periods, zeta = var(as.n
   start_t <- max(t_0 - pre_periods, 1)
   
   
-  omega_weight <- synthetic_control_weight(t(y_mat[-nn, seq_len(start_t - 1)]), y_mat[nn, seq_len(start_t - 1)], zeta = zeta)
+  omega_weight <- synthetic_control_weight(t(y_mat[-nn, seq_len(start_t - 1)]), y_mat[nn, seq_len(start_t - 1)], zeta = zeta,
+                                           constrained = constrained)
   
   for (t in start_t:end_t) {
     y_t <- y_mat[, c(seq_len(start_t - 1), t)]
     tt <- ncol(y_t)
-    lambda_weight <- synthetic_control_weight(y_t[-nn, -tt], y_t[-nn, tt], zeta = zeta)
+    lambda_weight <- synthetic_control_weight(y_t[-nn, -tt], y_t[-nn, tt], zeta = zeta,
+                                              constrained = T)
     sc_transpose_est <- sum(lambda_weight * y_t[nn, -tt])
     sc_est <- sum(omega_weight * y_t[-nn, tt])
     interact_est <- omega_weight %*% y_t[-nn, -tt] %*% lambda_weight
@@ -401,7 +408,8 @@ nsdid_prediction <- function(y_df,
                              post_periods = 20,
                              nnsize = NULL, 
                              scale = 100, 
-                             period = 52) {
+                             period = 52,
+                             constrained=T) {
   
   treatperiod <- y_df[1, 2]
   y <- y_df[1:(treatperiod-1), 1]
@@ -438,7 +446,8 @@ nsdid_prediction <- function(y_df,
   es_order <- order(es)
   
   y_input <- cbind(y_con[, es_order[seq_len(min(nnsize, nc))]], y_pre)
-  pred <- scdid_predict(t(y_input), treatperiod, pre_periods = pre_periods, post_periods = post_periods)
+  pred <- scdid_predict(t(y_input), treatperiod, pre_periods = pre_periods, post_periods = post_periods,
+                        constrained = constrained)
   return(pred * scale)
 }
 
@@ -455,7 +464,8 @@ estimate_scdid_series <- function(data_full,
                                   post_sdid = NULL,
                                   nn_sdid = NULL,
                                   scale_sdid = 100,
-                                  period_sdid = 30) {
+                                  period_sdid = 30,
+                                  constrained=T) {
   # Estimates SCDID treatment effects given a long form data set, outputting a dataframe
   # consisting of a series of treatments effects for each id_var by time_var in all  periods
   
@@ -512,7 +522,7 @@ estimate_scdid_series <- function(data_full,
     dplyr::mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
     dplyr::ungroup()
   
-
+  
   # create the control matrix once, which is an input to sdid estimator
   control_matrix <- tidyr::spread(
     control_data %>% dplyr::select(!!as.name(time_var), !!as.name(id_var), !!as.name(outcome_var)),
@@ -523,7 +533,7 @@ estimate_scdid_series <- function(data_full,
     t()
   
   split_treat_data <- treat_data %>% split(.[[id_var]])
-
+  
   # for each treated unit, find when it was treated
   list_of_treat_times <- split_treat_data %>%
     lapply(., function(x) {
@@ -531,19 +541,18 @@ estimate_scdid_series <- function(data_full,
         dplyr::select(Treatment_Period) %>%
         dplyr::first()
     })
-
+  
   # split the treated units into individual vectors
   list_of_treat_data <- split_treat_data %>% lapply(., function(x) {
     x %>%
       dplyr::select(!!as.name(outcome_var)) %>%
       as.matrix()
   })
-
+  
   list_inputs <- Map(cbind, list_of_treat_data, list_of_treat_times)
-
-
-  list_of_scdid_series <- furrr::future_map(list_inputs, nsdid_prediction, control_matrix, pre_sdid, post_sdid, nn_sdid, scale_sdid, period_sdid)
-
+  
+  list_of_scdid_series <- furrr::future_map(list_inputs, nsdid_prediction, control_matrix, pre_sdid, post_sdid, nn_sdid, scale_sdid, period_sdid, constrained=constrained)
+  
   
   # compute the TE by subtracting the matrix of predictions (list_of_scdid_series) from the outcome_var
   # Reformat so that the output is the same as the other functions, namely,
@@ -669,6 +678,7 @@ flexible_scm <- function(data_full, id_var = "entry", time_var = "period", treat
                                        "cf_pct.effect", "pct.effect"))) %>%
     dplyr::arrange(!!as.name(time_var), !!as.name(id_var))
   
+  return(flex_scm_series)
 }
 
 
@@ -684,4 +694,225 @@ scm_imputation <- function(treat_data, control_mat, treat_time){
   #summary(fit_enp, best.only=T)
   imputed_y=predict(fit_enp, bigstatsr::as_FBM(control_mat))
   return(imputed_y)
+}
+
+
+
+
+
+
+flexible_gfoo <- function(data_full, id_var = "entry", time_var = "period", treat_indicator = "treatperiod_0", outcome_var = "target",
+                          counterfac_var = "counter_factual"){
+  tr_entries <- data_full %>%
+    dplyr::filter(!!as.name(treat_indicator) > 0) %>%
+    dplyr::distinct(!!as.name(id_var)) %>%
+    dplyr::pull() %>%
+    sort()
+  ct_entries <- setdiff(data_full %>% dplyr::distinct(!!as.name(id_var)) %>% dplyr::pull(), tr_entries)
+  
+  
+  # create control data frame, with a new id for the sake of ordering observations later
+  control_data <- data_full %>% dplyr::filter(!!as.name(id_var) %in% ct_entries)
+  
+  
+  treat_data <- data_full %>%
+    dplyr::filter(!!as.name(id_var) %in% tr_entries) %>%
+    dplyr::arrange(!!as.name(time_var), !!as.name(id_var)) %>%
+    dplyr::group_by(!!as.name(id_var)) %>%
+    dplyr::mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
+    dplyr::ungroup()
+  
+  
+  # create the control matrix once, which is an input to sdid estimator
+  #NxT
+  control_matrix <- tidyr::spread(
+    control_data %>% dplyr::select(!!as.name(time_var), !!as.name(id_var), !!as.name(outcome_var)),
+    !!as.name(time_var), !!as.name(outcome_var)
+  ) %>%
+    dplyr::select(-!!as.name(id_var)) %>%
+    as.matrix() %>%
+    t()
+  
+  split_treat_data_pre <- treat_data %>% 
+    dplyr::filter(!!as.name(time_var)<Treatment_Period) %>%
+    dplyr::select(tidyselect::all_of(c(id_var, outcome_var))) %>%
+    dplyr::group_by(!!as.name(id_var)) %>%
+    dplyr::group_split( .keep = F) %>%
+    lapply(., function(x) x %>% dplyr::pull())
+  
+  # for each treated unit, find when it was treated
+  list_of_treat_times <- treat_data %>%
+    split(.[[id_var]]) %>%
+    lapply(., function(x) {
+      x %>% dplyr::select(Treatment_Period) %>% dplyr::slice(1) %>% dplyr::pull()
+    })
+  
+  
+  list_inputed_y=furrr::future_map2(.x=split_treat_data_pre,
+                                    .y=list_of_treat_times,
+                                    .f=~NearestNeighbourPrediction(y = .x,
+                                                                   ct.m = control_matrix,
+                                                                   treatperiod = .y) )
+  
+  
+  gfoo_series=Map(dplyr::bind_cols, treat_data %>% split(.[[id_var]]),
+                      lapply(list_inputed_y, function(x){
+                        return(tibble::tibble("point.pred"=x))
+                      } )) %>% 
+    dplyr::bind_rows() %>% 
+    dplyr::rename(response=!!as.name(outcome_var)) %>%
+    dplyr::mutate(point.effect = response - point.pred)
+  
+  if (!is.null(counterfac_var)) {
+    gfoo_series <- gfoo_series %>%
+      dplyr::mutate(
+        cf_point.effect = (response - !!as.name(counterfac_var)),
+        cf_pct.effect = (response / !!as.name(counterfac_var)) - 1
+      )
+  }
+  
+  # add a column with relative (pct) effect
+  gfoo_series <- gfoo_series %>% 
+    dplyr::mutate(pct.effect = (response / point.pred) - 1 ) %>%
+    dplyr::select(tidyselect::all_of(c(time_var, id_var,"point.pred" ,"response",
+                                       "Treatment_Period", "point.effect", 
+                                       counterfac_var,"cf_point.effect",
+                                       "cf_pct.effect", "pct.effect"))) %>%
+    dplyr::arrange(!!as.name(time_var), !!as.name(id_var))
+  
+  return(gfoo_series)
+}
+
+
+
+#' Using nearest neighbour method to do the prediction.
+#'
+#' @param y a vector of history values.
+#' @param ct.m sparse matrix of all the histories.
+#' @param treatperiod treat period of the given entry.
+#' @param neighbour.method method for prediction once the list of neighbours
+#'   are found. "median" skips zero entries when computing the median;
+#'   "mean" used mean of the neighbours, "none" disables scaling.
+#' @param neighbour.weighting boolean value of weighting option. If "TRUE",
+#'   more recent history is weighted higher using linear weight. If
+#'   "FALSE", no weight is used.
+#' @param scaling.option if "centered", we use the standard scaling to treat
+#'   histories: (x-mean(x))/std(x); if "mean", we use x/mean(x). If
+#'   "none", no scaling is used.
+#' @param neighbour.periods maximum number of periods used for prediction.
+#' @return A vector with prediction values that also include fit of
+#'   pre-treatment periods.
+#' @export
+NearestNeighbourPrediction <- function(y,
+                                       ct.m,
+                                       treatperiod,
+                                       num.neighbours = 8,
+                                       neighbour.method =
+                                         c("median", "mean"),
+                                       neighbour.weighting = TRUE,
+                                       scaling.option =
+                                         c("centered", "mean", "none"),
+                                       neighbour.periods = 20,
+                                       allow.zero.start = FALSE,
+                                       trend.upper.bound = 20) {
+  neighbour.method <- match.arg(neighbour.method)
+  scaling.option <- match.arg(scaling.option)
+  
+  # Start period starts from non-zero period.
+  if (!allow.zero.start) {
+    start.period <- min(which(y > 0))
+  } else {
+    start.period <- 1
+  }
+  if (length(y) - start.period > neighbour.periods) {
+    start.period <- length(y) - neighbour.periods
+  }
+  y <- y[seq(from = start.period, to = length(y), by = 1)]
+  if (sum(y) == 0) {
+    pred <- rep(0, nrow(ct.m))
+    return(pred)
+  }
+  x <- ct.m[seq(from = start.period, to = (treatperiod - 1), by = 1), ]
+  
+  # Make sure there is no zero-sum rows
+  col.sumx <- colSums(x)
+  x <- x[, which(col.sumx > 0)]
+  ct.m <- ct.m[, which(col.sumx > 0)]
+  
+  # Scale the histories if needed.
+  yx <- cbind(y, x)
+  if (scaling.option == "centered") {
+    yx <- scale(cbind(y, x))
+  } else if (scaling.option == "mean") {
+    yx <- t(t(yx) / colSums(yx)) * nrow(yx)
+  }
+  yx[, which(is.na(yx[1, ]))] <- 0
+  
+  # Set the weights for distance calculation.
+  if (neighbour.weighting) {
+    weights <- seq_len(nrow(yx))
+  } else {
+    weights <- rep(1, nrow(yx))
+  }
+  distance <- colSums(((yx[, seq(from = 2, to = ncol(yx), by = 1)]
+                        - yx[, 1]) * weights)^2)
+  
+  # id <- order(distance)[seq_len(num.neighbours)]
+  # Modification: We choose 1.5 times as many neighbours but only use those
+  # with closest volume
+  id.init <- order(distance)[seq_len(floor(num.neighbours * 1.5))]
+  xx <- ct.m[seq(from = start.period, to = (treatperiod - 1), by = 1), id.init]
+  yxx <- cbind(y, xx)
+  distance <- colSums((yxx[, seq(from = 2, to = ncol(yxx), by = 1)]
+                       - yxx[, 1])^2)
+  id <- id.init[order(distance)[seq_len(num.neighbours)]]
+  
+  # All the secret sauces
+  if (scaling.option == "centered") {
+    z.var <- apply(x[, id], 2, var)
+    z.id <- which(z.var == 0)
+    if (length(z.id) > 0) z.var[which(z.var == 0)] <- 1
+    z <- t(t(ct.m[, id] - matrix(rep(colMeans(x[, id]),
+                                     each = nrow(ct.m)
+    ), nrow = nrow(ct.m))) /
+      sqrt(z.var))
+  } else if (scaling.option == "mean") {
+    deno <- colSums(ct.m[seq(
+      from = start.period, to = (treatperiod - 1),
+      by = 1
+    ), id])
+    # Apply an upper bound on the trends to prevent blowup
+    z <- mean(y) * nrow(yx) * apply(
+      t(t(ct.m[, id]) / deno), c(1, 2),
+      function(x) {
+        return(min(x, trend.upper.bound))
+      }
+    )
+  } else {
+    z <- t(t(ct.m[, id]))
+  }
+  
+  # Estimate the predicted values using different method.
+  # Skip zero period when computing median.
+  if (neighbour.method == "mean") {
+    pred <- apply(z, 1, mean)
+  } else if (neighbour.method == "median") {
+    tmedian <- function(x) {
+      if (sum(x) == 0) {
+        return(0)
+      }
+      return(median(x[x != 0]))
+    }
+    pred <- apply(z, 1, tmedian)
+  }
+  
+  # Scale the prediction back.
+  if (scaling.option == "centered") {
+    pred <- pred * sqrt(var(y)) + mean(y)
+  }
+  
+  # if (start.period > 1) {
+  #   pred[seq_len(start.period - 1)] <- 0
+  # }
+  return(pred)
 }
