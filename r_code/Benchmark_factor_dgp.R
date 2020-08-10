@@ -11,7 +11,7 @@ source(here::here("r_code/ensemble_estimators.R"))
 source(here::here("r_code/placebo_creation.R"))
 plan(multiprocess, workers=availableCores()-1)
 set.seed(1982)
-n_seeds <- 50
+n_seeds <- 100
 seeds <- sample(1000:9999, size = n_seeds)
 
 options(future.globals.maxSize= 891289600) #850mb=850*1024^2
@@ -60,7 +60,7 @@ aa_dgp_params<-list(
     cov_overlap_scale = 0,
     seed=42
   ),
-  "aa_low_acf_sel_covariate_shift"=list(
+  "aa_low_acf_int_shift"=list(
     date_start="2010-01-01",
     first_treat="2017-07-01",
     date_end="2020-01-01",
@@ -71,9 +71,24 @@ aa_dgp_params<-list(
     rho=0.1,
     num_factors=4,
     rescale_y_mean = 2.5e3,
-    selection="observables",
-    cov_overlap_scale = 0.75,
-    loading_scale = 0,
+    intercept_scale = 2.15,
+    cov_overlap_scale = 0,
+    seed=42
+  ),
+  "aa_low_acf_load_int_shifts"=list(
+    date_start="2010-01-01",
+    first_treat="2017-07-01",
+    date_end="2020-01-01",
+    num_entries=200,
+    prop_treated=0.25,
+    treat_impact_sd = 0, 
+    treat_impact_mean = 0, 
+    rho=0.1,
+    num_factors=4,
+    rescale_y_mean = 2.5e3,
+    cov_overlap_scale = 0,
+    intercept_scale = 1.9,
+    loading_scale = 0.75,
     seed=42
   ),
   "aa_noisy_factors"=list(
@@ -269,9 +284,9 @@ ab_dgp_params<-list(
 )
 
 
-
+use_ensemble=F
 #TODO(alexdkellogg): doing double the work (calling tot on post and all periods)
-list_of_dgps=c(aa_dgp_params,ab_dgp_params)
+list_of_dgps=c(aa_dgp_params,ab_dgp_params)[1]
 for(i in seq_len(length(list_of_dgps))){
   tic("Starting DGP")
   data_requested=do.call(factor_synthetic_dgp,list_of_dgps[[i]])
@@ -315,6 +330,39 @@ for(i in seq_len(length(list_of_dgps))){
   scdid_tot_var=compute_tot_variance(scdid_tot)
   scdid_coverage=compute_tot_coverage(scdid_tot)
   toc()
+  
+  tic("Estimating SCDID unconstrained")
+  scdid_est_uncon=furrr::future_map(formatted_data, estimate_scdid_series, constrained=F)
+  scdid_uncon_tot=furrr::future_map(scdid_est_uncon, compute_tot_se_jackknife, stat_in="mean")
+  
+  scdid_uncon_bias=compute_jackknife_bias(scdid_uncon_tot)
+  # scdid_bias_plot=create_gap_ci_plot(scdid_bias,
+  #                                       plot_title="SCDID Bias",
+  #                                       plot_x_lab="Post-Treat Time",
+  #                                       plot_y_lab="ATT Bias", pct_flag = F)
+  scdid_uncon_bias_plot=plot_full_gap(scdid_est_uncon)+
+    ggplot2::labs(y="ATT Bias", title="SCDID Unconstrained Bias")
+  scdid_uncon_overall_metrics=compute_jackknife_metrics(scdid_est_uncon)
+  scdid_uncon_tot_var=compute_tot_variance(scdid_uncon_tot)
+  scdid_uncon_coverage=compute_tot_coverage(scdid_uncon_tot)
+  toc()
+  
+  tic("Estimating SCM unconstrained")
+  scm_est=furrr::future_map(formatted_data, flexible_scm)
+  scm_tot=furrr::future_map(scm_est, compute_tot_se_jackknife, stat_in="mean")
+  
+  scm_bias=compute_jackknife_bias(scm_tot)
+  # scdid_bias_plot=create_gap_ci_plot(scdid_bias,
+  #                                       plot_title="SCDID Bias",
+  #                                       plot_x_lab="Post-Treat Time",
+  #                                       plot_y_lab="ATT Bias", pct_flag = F)
+  scm_bias_plot=plot_full_gap(scm_est)+
+    ggplot2::labs(y="ATT Bias", title="SCM Bias")
+  scm_overall_metrics=compute_jackknife_metrics(scm_est)
+  scm_tot_var=compute_tot_variance(scm_tot)
+  scm_coverage=compute_tot_coverage(scm_tot)
+  toc()
+  
 
   tic("Estimating MC")
   mc_est=furrr::future_map(formatted_data, estimate_gsynth_series, se=F,
@@ -349,42 +397,43 @@ for(i in seq_len(length(list_of_dgps))){
   causalimpact_coverage=compute_tot_coverage(causalimpact_tot)
   toc()
   
-  #For ensemble -- create an AA version of the data, estimate weights, apply
-  tic("Estimating Ensemble")
-  placebo_data=furrr::future_map(formatted_data, create_placebo_df)
-  gsynth_placebo_est=furrr::future_map(placebo_data, estimate_gsynth_series, se=F)
-  scdid_placebo_est=furrr::future_map(placebo_data, estimate_scdid_series)
-  mc_placebo_est=furrr::future_map(placebo_data, estimate_gsynth_series, se=F,
-                           estimator="mc")
-  causalimpact_placebo_est=furrr::future_map(placebo_data, estimate_causalimpact_series)
-  
-  ensemble_weights=tryCatch( 
-    {furrr::future_pmap(list(gsynth_placebo_est, scdid_placebo_est, mc_placebo_est, causalimpact_placebo_est), 
-                                     ensemble_placebo_weights, constrained=T, intercept_allowed=T) },
-    error=function(e){
-      rep(list(c(0,0.25,0.25,0.25,0.25)), n_seeds)
-    })
-  ensemble_est=furrr::future_pmap(list( method1_estimated_df=gsynth_est,
-                                        method2_estimated_df=scdid_est, 
-                                        method3_estimated_df=causalimpact_est,
-                                        method4_estimated_df=mc_est, 
-                                        est_weights=ensemble_weights),
-                               ensembled_predictor)
-  ensemble_tot=furrr::future_map(ensemble_est, compute_tot_se_jackknife, stat_in="mean")
-  ensemble_bias=compute_jackknife_bias(ensemble_tot)
-  # ensemble_bias_plot=create_gap_ci_plot(ensemble_bias,
-  #                                           plot_title="Ensemble Bias",
-  #                                           plot_x_lab="Post-Treat Time",
-  #                                           plot_y_lab="ATT Bias",  pct_flag = F)
-  ensemble_bias_plot=plot_full_gap(ensemble_est)+
-    ggplot2::labs(y="ATT Bias", title="Ensemble Bias")
-  ensemble_overall_metrics=compute_jackknife_metrics(ensemble_est)
-  ensemble_tot_var=compute_tot_variance(ensemble_tot)
-  ensemble_coverage=compute_tot_coverage(ensemble_tot)
-  toc()
-  
+  if(use_ensemble){
+    #For ensemble -- create an AA version of the data, estimate weights, apply
+    tic("Estimating Ensemble")
+    placebo_data=furrr::future_map(formatted_data, create_placebo_df)
+    gsynth_placebo_est=furrr::future_map(placebo_data, estimate_gsynth_series, se=F)
+    scdid_placebo_est=furrr::future_map(placebo_data, estimate_scdid_series)
+    mc_placebo_est=furrr::future_map(placebo_data, estimate_gsynth_series, se=F,
+                                     estimator="mc")
+    causalimpact_placebo_est=furrr::future_map(placebo_data, estimate_causalimpact_series)
+    
+    
+    ensemble_weights=tryCatch( 
+      {furrr::future_pmap(list(gsynth_placebo_est, scdid_placebo_est, mc_placebo_est, causalimpact_placebo_est), 
+                          ensemble_placebo_weights, constrained=T, intercept_allowed=T) },
+      error=function(e){
+        rep(list(c(0,0.25,0.25,0.25,0.25)), n_seeds)
+      })
+    ensemble_est=furrr::future_pmap(list( method1_estimated_df=gsynth_est,
+                                          method2_estimated_df=scdid_est, 
+                                          method3_estimated_df=causalimpact_est,
+                                          method4_estimated_df=mc_est, 
+                                          est_weights=ensemble_weights),
+                                    ensembled_predictor)
+    ensemble_tot=furrr::future_map(ensemble_est, compute_tot_se_jackknife, stat_in="mean")
+    ensemble_bias=compute_jackknife_bias(ensemble_tot)
+    # ensemble_bias_plot=create_gap_ci_plot(ensemble_bias,
+    #                                           plot_title="Ensemble Bias",
+    #                                           plot_x_lab="Post-Treat Time",
+    #                                           plot_y_lab="ATT Bias",  pct_flag = F)
+    ensemble_bias_plot=plot_full_gap(ensemble_est)+
+      ggplot2::labs(y="ATT Bias", title="Ensemble Bias")
+    ensemble_overall_metrics=compute_jackknife_metrics(ensemble_est)
+    ensemble_tot_var=compute_tot_variance(ensemble_tot)
+    ensemble_coverage=compute_tot_coverage(ensemble_tot)
+    toc()  
+  }
   save.image(here::here("Data", "Variations", paste(names(list_of_dgps)[i],".RData",sep = "")))
-  #save.image(here::here(paste("Data/",glue::glue("Data{i}.RData"),sep = "")))
 }
 
 
