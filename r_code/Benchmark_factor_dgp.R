@@ -11,7 +11,7 @@ source(here::here("r_code/ensemble_estimators.R"))
 source(here::here("r_code/placebo_creation.R"))
 plan(multiprocess, workers=availableCores()-1)
 set.seed(1982)
-n_seeds <- 100
+n_seeds <- 75
 seeds <- sample(1000:9999, size = n_seeds)
 
 options(future.globals.maxSize= 891289600) #850mb=850*1024^2
@@ -286,7 +286,7 @@ ab_dgp_params<-list(
 
 use_ensemble=F
 #TODO(alexdkellogg): doing double the work (calling tot on post and all periods)
-list_of_dgps=c(aa_dgp_params,ab_dgp_params)[1]
+list_of_dgps=c(aa_dgp_params,ab_dgp_params)
 for(i in seq_len(length(list_of_dgps))){
   tic("Starting DGP")
   data_requested=do.call(factor_synthetic_dgp,list_of_dgps[[i]])
@@ -332,17 +332,17 @@ for(i in seq_len(length(list_of_dgps))){
   toc()
   
   tic("Estimating SCDID unconstrained")
-  scdid_est_uncon=furrr::future_map(formatted_data, estimate_scdid_series, constrained=F)
-  scdid_uncon_tot=furrr::future_map(scdid_est_uncon, compute_tot_se_jackknife, stat_in="mean")
+  scdid_uncon_est=furrr::future_map(formatted_data, estimate_scdid_series, constrained=F)
+  scdid_uncon_tot=furrr::future_map(scdid_uncon_est, compute_tot_se_jackknife, stat_in="mean")
   
   scdid_uncon_bias=compute_jackknife_bias(scdid_uncon_tot)
   # scdid_bias_plot=create_gap_ci_plot(scdid_bias,
   #                                       plot_title="SCDID Bias",
   #                                       plot_x_lab="Post-Treat Time",
   #                                       plot_y_lab="ATT Bias", pct_flag = F)
-  scdid_uncon_bias_plot=plot_full_gap(scdid_est_uncon)+
+  scdid_uncon_bias_plot=plot_full_gap(scdid_uncon_est)+
     ggplot2::labs(y="ATT Bias", title="SCDID Unconstrained Bias")
-  scdid_uncon_overall_metrics=compute_jackknife_metrics(scdid_est_uncon)
+  scdid_uncon_overall_metrics=compute_jackknife_metrics(scdid_uncon_est)
   scdid_uncon_tot_var=compute_tot_variance(scdid_uncon_tot)
   scdid_uncon_coverage=compute_tot_coverage(scdid_uncon_tot)
   toc()
@@ -361,6 +361,22 @@ for(i in seq_len(length(list_of_dgps))){
   scm_overall_metrics=compute_jackknife_metrics(scm_est)
   scm_tot_var=compute_tot_variance(scm_tot)
   scm_coverage=compute_tot_coverage(scm_tot)
+  toc()
+  
+  tic("Estimating Gfoo")
+  gfoo_est=furrr::future_map(formatted_data, flexible_gfoo)
+  gfoo_tot=furrr::future_map(gfoo_est, compute_tot_se_jackknife, stat_in="mean")
+  
+  gfoo_bias=compute_jackknife_bias(gfoo_tot)
+  # scdid_bias_plot=create_gap_ci_plot(scdid_bias,
+  #                                       plot_title="SCDID Bias",
+  #                                       plot_x_lab="Post-Treat Time",
+  #                                       plot_y_lab="ATT Bias", pct_flag = F)
+  gfoo_bias_plot=plot_full_gap(gfoo_est)+
+    ggplot2::labs(y="ATT Bias", title="Gfoo Bias")
+  gfoo_overall_metrics=compute_jackknife_metrics(gfoo_est)
+  gfoo_tot_var=compute_tot_variance(gfoo_tot)
+  gfoo_coverage=compute_tot_coverage(gfoo_tot)
   toc()
   
 
