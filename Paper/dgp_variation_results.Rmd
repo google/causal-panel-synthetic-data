@@ -22,7 +22,7 @@ plan(multiprocess, workers=availableCores()-1)
 
 ## For Loop Over DGPs
 
-```{r dgp-loop, echo=FALSE}
+```{r dgp-loop, echo=FALSE, fig.height=9, fig.width=10}
 #source(here("r_code/benchmark_factor_dgp.R"))
 source(here("r_code/markdown_figure_gen.R"))
 
@@ -31,7 +31,42 @@ methods_used=c("gsynth", "scdid", "scdid_uncon", "scm", "gfoo",
                "mc", "causalimpact")
 for_gt=lapply(dataset_names, gt_set_up, method_vec=methods_used)
 
-markdown_estimation_output(for_gt[[1]], dataset_names[[1]], method_vec = methods_used)
+markdown_estimation_output(for_gt[[1]], dataset_names[[1]],
+                           method_vec = methods_used,
+                           plot_indiv = T)
+markdown_estimation_output(for_gt[[2]], dataset_names[[2]], 
+                           method_vec = methods_used)
+markdown_estimation_output(for_gt[[3]], dataset_names[[3]], 
+                           method_vec = methods_used)
+markdown_estimation_output(for_gt[[4]], dataset_names[[4]], 
+                           method_vec = methods_used)
+markdown_estimation_output(for_gt[[5]], dataset_names[[5]], 
+                           method_vec = methods_used)
+markdown_estimation_output(for_gt[[6]], dataset_names[[6]], 
+                           method_vec = methods_used)
+markdown_estimation_output(for_gt[[7]], dataset_names[[7]], 
+                           method_vec = methods_used)
+markdown_estimation_output(for_gt[[8]], dataset_names[[8]], 
+                           method_vec = methods_used)
+markdown_estimation_output(for_gt[[9]], dataset_names[[9]], 
+                           method_vec = methods_used)
+markdown_estimation_output(for_gt[[10]], dataset_names[[10]], 
+                           method_vec = methods_used)
+markdown_estimation_output(for_gt[[11]], dataset_names[[11]], 
+                           method_vec = methods_used)
+markdown_estimation_output(for_gt[[12]], dataset_names[[12]], 
+                           method_vec = methods_used)
+markdown_estimation_output(for_gt[[13]], dataset_names[[13]], 
+                           method_vec = methods_used)
+markdown_estimation_output(for_gt[[14]], dataset_names[[14]], 
+                           method_vec = methods_used)
+markdown_estimation_output(for_gt[[15]], dataset_names[[15]], 
+                           method_vec = methods_used)
+markdown_estimation_output(for_gt[[16]], dataset_names[[16]], 
+                           method_vec = methods_used)
+markdown_estimation_output(for_gt[[17]], dataset_names[[17]], 
+                           method_vec = methods_used)
+
 
 #for_gt[[2]]=for_gt[[1]]
 #dataset_names[[2]]=dataset_names[[1]]

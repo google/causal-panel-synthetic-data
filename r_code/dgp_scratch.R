@@ -4,6 +4,19 @@ pacman::p_load(dplyr, furrr, tidyr, stats,
 
 
 
+#Ensemble usage
+furrr::future_map2(.x=formatted_data[c(1,2)], 
+                   .y=preprocess_ensemble_input(list(gs_ens, mc_ens)),
+                   .f=~estimate_ensemble(
+                     method_names=c("gsynth", "mc"),
+                     true_data=.x, pred_list=.y))
+
+
+estimate_ensemble( method_names=c("gsynth", "mc"),
+                   true_data=formatted_data[[1]], pred_list=list(gs_ens[[1]], mc_ens[[1]]),
+                   indiv_weights = F)
+
+
 
 #check if the selection is occuring on the right components
 #specifically, want selection on growth and or size
@@ -18,15 +31,10 @@ test_data_raw=do.call(factor_synthetic_dgp,list(date_start="2010-01-01",
                                                  num_factors=4,
                                                  rescale_y_mean = 2.5e3,
                                                  cov_overlap_scale = 0,
-                                                 intercept_scale = 1.75,
+                                                 intercept_scale = 0,
                                                  loading_scale = 0.8,
                                                  seed=42))
 
-noised_test=furrr::future_map(.x=sample(1000:9999, size = 50), 
-                              .f=~noisify_draw(
-                                data_inp=test_data_raw,
-                                seed=.x,
-                                sig_y=0.2))
 
 #obs: loading scale=0 leads to no difference, roughly, in size or growth
 #obs: loading scale=0.95 has large differences in both, particularly growth... however, can  be negative!!
@@ -46,8 +54,7 @@ check_selection <- function(input){
   
   return(list(size, growth))
 }
-
-list_test=lapply(noised_test, check_selection)
+check_selection(test_data_raw)
 
 #Attempt at my own SDID
 
@@ -177,39 +184,51 @@ sdid_weights <- function(treat_data, control_mat, treat_time){
 # Functions to create a placebo dataset,
 # assigning treatment based on matching.
 ###########################################
-nearest_ts_euclidean <- function(ts_tomatch, ts_rest) {
-  # Helper function for matching_without_replacement
-  # Measures the euclidean distance between ts_tomatch
-  # and each of the rows in the tibble ts_rest.
+gfoo_match <- function(ts_tomatch, ts_pool, treatperiod, 
+                                 num.neighbours = 8, neighbour.weighting = F,
+                                 scaling.option = c("centered", "mean", "none")) {
   
-  # Args
-  # ts_tomatch: treated time series tibble, rows identify ID and columns Time
-  # ts_rest: donor time series tibble, rows identify ID and columns Time.
+  neighbour.method <- match.arg(neighbour.method)
+  scaling.option <- match.arg(scaling.option)
   
-  # Output
-  # Vector of indices indicating the row in ts_rest that are best match
-  # (min L2 norm distance) to the row in ts_tomatch.
-  # (Vector length equal to number of rows in ts_tomatch, ie treated entries)
-  # If ts_tomatch has more than 1 entry, the matching is done with replacement
-  # (multiple treated can have the same match).
+  # Scale the histories if needed.
+  yx <- cbind(ts_tomatch, ts_pool)
+  if (scaling.option == "centered") {
+    yx <- scale(yx)
+  } else if (scaling.option == "mean") {
+    yx <- t(t(yx) / colSums(yx)) * nrow(yx)
+  }
+  yx[, which(is.na(yx[1, ]))] <- 0
   
-  return(apply(ts_tomatch, 1, function(ts_tomatch) {
-    which.min(
-      apply(
-        ts_rest, 1, function(ts_rest, ts_tomatch) {
-          stats::dist(rbind(ts_rest, ts_tomatch))
-        },
-        ts_tomatch
-      )
-    )
-  }))
+  # Set the weights for distance calculation.
+  if (neighbour.weighting) {
+    #increasing weights up to Treatment period, then decreasing again
+    weights <- c(seq_len(treatperiod), 
+                 seq(treatperiod, by=-1, length.out = nrow(yx)-treatperiod))
+  } else {
+    weights <- rep(1, nrow(yx))
+  }
+  distance <- colSums(((yx[, seq(from = 2, to = ncol(yx), by = 1)]
+                        - yx[, 1]) * weights)^2)
+  
+  # id <- order(distance)[seq_len(num.neighbours)]
+  # Modification: We choose 1.5 times as many neighbours but only use those
+  # with closest volume
+  id.init <- order(distance)[seq_len(floor(num.neighbours * 1.5))]
+  
+  xx <- ts_pool[, id.init]
+  yxx <- cbind(ts_tomatch, xx)
+  distance <- colSums((yxx[, seq(from = 2, to = ncol(yxx), by = 1)]
+                       - yxx[, 1])^2)
+  id <- id.init[order(distance)[seq_len(num.neighbours)]]
+  return(id[1])
 }
 
 
-matching_without_replacement <- function(treated_block,
+gfoo_match_helper <- function(treated_block,
                                          control_block,
-                                         id_var,
-                                         treat_period) {
+                                         id_var, time_var,
+                                         treat_period, outcome_var) {
   # finds the nearest match for each treated unit (treated_block)
   # among the donor pool (control_block) without replacement by calling helper
   # to nearest_ts_euclidean.
@@ -227,36 +246,54 @@ matching_without_replacement <- function(treated_block,
   # initialize an empty vector for the donor IDs that match
   already_matched <- c()
   # Store the time of treatment and treated ID for the true treated units
-  placebo_treat_period <- treated_block %>% dplyr::pull(tidyselect::all_of(treat_period))
-  treatment_unit <- treated_block %>% dplyr::pull(!!as.name(id_var))
-  for (i in seq_len(nrow(treated_block))) {
+  placebo_treat_period <- treated_block %>%
+    dplyr::distinct(!!as.name(id_var), .keep_all=T) %>%
+    dplyr::select(tidyselect::all_of(c(id_var,treat_period))) %>%
+    dplyr::rename(Treatment_Unit=id_var)
+  treat_pool=treated_block %>% 
+    dplyr::distinct(!!as.name(id_var)) %>% 
+    dplyr::pull() %>% 
+    sample()
+  for (i in seq_along(treat_pool)) {
     #Find nearest euclidean match among unmatched controls for 
     #each treated observation
-    temp_match <- nearest_ts_euclidean(
-      treated_block %>%
-        dplyr::slice(i) %>%
-        dplyr::select(-tidyselect::all_of(c(id_var,treat_period))),
-      control_block %>%
-        dplyr::filter(!!as.name(id_var) %in% setdiff(!!as.name(id_var), 
-                                                     already_matched)) %>% 
-        dplyr::select(-tidyselect::all_of(id_var)))
+    control_mat=control_block %>%
+      dplyr::filter(!!as.name(id_var) %in% setdiff(!!as.name(id_var), 
+                                                   already_matched)) %>%
+      tidyr::spread(!!as.name(time_var), !!as.name(outcome_var) ) %>%
+      dplyr::select(-!!as.name(id_var)) %>%
+      as.matrix() %>%
+      t()
+    
+    treat_unit=treated_block %>%
+      dplyr::filter(!!as.name(id_var)==treat_pool[i]) %>%
+      dplyr::pull(!!as.name(outcome_var))
+    
+    treat_time=treated_block %>%
+      dplyr::filter(!!as.name(id_var)==treat_pool[i]) %>%
+      dplyr::distinct(!!as.name(treat_period)) %>%
+      dplyr::pull()
+    
+    temp_match <- gfoo_match(
+      ts_tomatch =treat_unit,
+      ts_pool=control_mat,
+      treatperiod = treat_time,...)
     #Update the vector of already matched donors
     already_matched[i] <- control_block %>%
       dplyr::filter(!!as.name(id_var) %in% 
                       setdiff(!!as.name(id_var), already_matched)) %>%
+      dplyr::distinct(!!as.name(id_var)) %>%
       dplyr::slice(temp_match) %>%
-      dplyr::pull(!!as.name(id_var))
+      dplyr::pull()
   }
   # Store the resulting vectors in a tibble for output
-  df_toreturn <- tibble::tibble(temp_id = already_matched, 
-                                temp_treattime = placebo_treat_period, 
-                                Treatment_Unit = treatment_unit)
+  df_toreturn <- tibble::tibble(temp_id = already_matched,
+                                Treatment_Unit = treat_pool) %>%
+    dplyr::inner_join(placebo_treat_period, by="Treatment_Unit") %>% 
+    dplyr::rename(!!as.name(id_var) := temp_id)
   
-  return(df_toreturn %>% 
-           dplyr::rename(!!as.name(id_var) := temp_id,
-                         !!as.name(treat_period) := temp_treattime))
+  return(df_toreturn)
 }
-
 
 
 #attempting to match based on TS features and compare the performance (seems worse)
@@ -266,7 +303,7 @@ create_placebo_df <- function(data_full, id_var = "entry",
                               treat_indicator = "treatperiod_0",
                               outcome_var = "target", 
                               counterfac_var = "counter_factual",
-                              match_type="feature") {
+                              match_type="old") {
   # Generates a placebo tibble, using matching methods to select
   # placebo-treated entries as those most similar to truly-treated.
   
@@ -301,87 +338,140 @@ create_placebo_df <- function(data_full, id_var = "entry",
                           dplyr::distinct(!!as.name(id_var)) %>%
                           dplyr::pull(), tr_entries)
   # Create a dataframe pf the subset of control units
-  cd <- data_full %>% dplyr::filter(!!as.name(id_var) %in% ct_entries)
-  cd <- merge(
-    cd,
-    data.frame(
-      entry = ct_entries,
-      rank = seq_along(ct_entries)
-    )
-  )
+  cd <- data_full %>% 
+    dplyr::filter(!!as.name(id_var) %in% ct_entries) %>%
+    dplyr::select(tidyselect::all_of(c(time_var, id_var, outcome_var )))
   
-  # Pivot the long cd dataframe to wide. Each row will represent an id_var, 
-  #with columns for the outcome_var at each time period
-  cd_for_match <- tidyr::pivot_wider(
-    data = cd %>%
-      dplyr::arrange(!!as.name(time_var), !!as.name(id_var)),
-    names_from = !!as.name(time_var),
-    id_cols = c(!!as.name(id_var)),
-    values_from = c(!!as.name(outcome_var))
-  )
   
   # Store treated data in a tibble
   treated_to_match <- data_full %>%
-    dplyr::filter(!!as.name(id_var) %in% tr_entries)
-  
-  #Create a variable indicating the time treatment is assigned by unit
-  treated_to_match <- treated_to_match %>%
+    dplyr::filter(!!as.name(id_var) %in% tr_entries) %>%
     dplyr::group_by(!!as.name(id_var)) %>%
     dplyr::mutate(
       Treatment_Period =
         length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1
     ) %>%
-    dplyr::ungroup()
+    dplyr::ungroup() %>%
+    dplyr::select(tidyselect::all_of(c(time_var, id_var, outcome_var,
+                                       "Treatment_Period" )))
   
-  # for pivoting, potential issues arise if we have several time varying 
-  # covariates -- added as TODO.
-  # we'd have to take the values_from each of them, 
-  #and for any constant args we'd presumably have to add them to id_cols
-  #Pivot the data wide, so each row has all the time series data for 
-  #a given unit.
-  data_wide_m <- tidyr::pivot_wider(
-    data = treated_to_match,
-    names_from = !!as.name(time_var),
-    id_cols = c(!!as.name(id_var), Treatment_Period),
-    values_from = c(!!as.name(outcome_var))
-  ) # %>% as.matrix()
-  
-  
-  list_of_ts <- data_full %>%
-    dplyr::select(!!as.name(id_var), !!as.name(outcome_var)) %>%
-    split(.[[id_var]]) %>%
-    furrr::future_map(~ .[[outcome_var]]) %>%
-    furrr::future_map(~ stats::ts(.))
-  df_feat <- tsfeatures::tsfeatures(list_of_ts) %>% 
-    dplyr::mutate(!!as.name(id_var):=seq_len(dplyr::n())) 
-  
-  treated_ts_features= df_feat %>%
-    dplyr::filter(!!as.name(id_var) %in% tr_entries) %>%
-    dplyr::left_join(
-      treated_to_match %>%
-        dplyr::select(tidyselect::all_of(c(id_var, "Treatment_Period"))) %>%
-        dplyr::distinct(), by=c(id_var) )
-  
-  control_ts_features= df_feat %>%
-    dplyr::filter(!!as.name(id_var) %in% ct_entries)
-  
-  if(match_type=="ts"){
+  if(match_type=="gfoo"){
+    # for pivoting, potential issues arise if we have several time varying 
+    # covariates -- added as TODO.
+    # we'd have to take the values_from each of them, 
+    #and for any constant args we'd presumably have to add them to id_cols
+    #Pivot the data wide, so each row has all the time series data for 
+    #a given unit.
+
     # Determine control units to assign to placebo treatment group via matching.
-    matched_placebo_df_temp <- matching_without_replacement(data_wide_m, 
-                                                            cd_for_match, 
-                                                            id_var,
-                                                            "Treatment_Period")
+    matched_placebo_df_temp <- 
+      matching_without_replacement(treated_to_match, cd, id_var=id_var,
+                                   treat_period = "Treatment_Period",
+                                   outcome_var = outcome_var,
+                                   time_var = time_var)
   }
-  
   if(match_type=="feature"){
+    list_of_ts <- data_full %>%
+      dplyr::select(!!as.name(id_var), !!as.name(outcome_var)) %>%
+      split(.[[id_var]]) %>%
+      furrr::future_map(~ .[[outcome_var]]) %>%
+      furrr::future_map(~ stats::ts(.))
+    df_feat <- tsfeatures::tsfeatures(list_of_ts) %>% 
+      dplyr::mutate(!!as.name(id_var):=seq_len(dplyr::n())) 
+    
+    treated_ts_features= df_feat %>%
+      dplyr::filter(!!as.name(id_var) %in% tr_entries) %>%
+      dplyr::left_join(
+        treated_to_match %>%
+          dplyr::select(tidyselect::all_of(c(id_var, "Treatment_Period"))) %>%
+          dplyr::distinct(), by=c(id_var) )
+    
+    control_ts_features= df_feat %>%
+      dplyr::filter(!!as.name(id_var) %in% ct_entries)
+    
     matched_placebo_df_temp<- matching_without_replacement(treated_ts_features, 
                                                            control_ts_features, 
                                                            id_var,
                                                            "Treatment_Period")
   }
-
+  
+  if(match_type=="old"){
+    # Split the dataset based on whether the unit is ever treated
+    tr_entries <- data_full %>%
+      dplyr::filter(!!as.name(treat_indicator) > 0) %>%
+      dplyr::distinct(!!as.name(id_var)) %>%
+      dplyr::pull()
+    
+    ct_entries <- setdiff(data_full %>%
+                            dplyr::distinct(!!as.name(id_var)) %>%
+                            dplyr::pull(), tr_entries)
+    # Create a dataframe pf the subset of control units
+    cd <- data_full %>% dplyr::filter(!!as.name(id_var) %in% ct_entries)
+    cd <- merge(
+      cd,
+      data.frame(
+        entry = ct_entries,
+        rank = seq_along(ct_entries)
+      )
+    )
+    
+    # Pivot the long cd dataframe to wide. Each row will represent an id_var, 
+    #with columns for the outcome_var at each time period
+    cd_for_match <- tidyr::pivot_wider(
+      data = cd %>%
+        dplyr::arrange(!!as.name(time_var), !!as.name(id_var)),
+      names_from = !!as.name(time_var),
+      id_cols = c(!!as.name(id_var)),
+      values_from = c(!!as.name(outcome_var))
+    )
+    
+    # Store treated data in a tibble
+    treated_to_match <- data_full %>%
+      dplyr::filter(!!as.name(id_var) %in% tr_entries)
+    
+    #Create a variable indicating the time treatment is assigned by unit
+    treated_to_match <- treated_to_match %>%
+      dplyr::group_by(!!as.name(id_var)) %>%
+      dplyr::mutate(
+        Treatment_Period =
+          length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1
+      ) %>%
+      dplyr::ungroup()
+    
+    # for pivoting, potential issues arise if we have several time varying 
+    # covariates -- added as TODO.
+    # we'd have to take the values_from each of them, 
+    #and for any constant args we'd presumably have to add them to id_cols
+    #Pivot the data wide, so each row has all the time series data for 
+    #a given unit.
+    data_wide_m <- tidyr::pivot_wider(
+      data = treated_to_match,
+      names_from = !!as.name(time_var),
+      id_cols = c(!!as.name(id_var), Treatment_Period),
+      values_from = c(!!as.name(outcome_var))
+    ) # %>% as.matrix()
+    
+    # Determine control units to assign to placebo treatment group via matching.
+    matched_placebo_df_temp <- matching_without_replacement(data_wide_m, 
+                                                            cd_for_match, 
+                                                            id_var,
+                                                            "Treatment_Period")
+    
+  }
+  
   return(matched_placebo_df_temp)
 }
+
+
+
+
+
+
+
+
+
+
+
 
 
 pair_distance_helper=function(pair_map, data_full){

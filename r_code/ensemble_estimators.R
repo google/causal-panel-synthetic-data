@@ -1,12 +1,85 @@
 pacman::p_load(dplyr, ggplot2, quadprog)
 
-# lots of edits:
-# TODO(alexdkellogg): Include additional weight selection methods? How about adopting the SCDID code and doing double SCDID?
 
-ensemble_placebo_weights <- function(method1_estimated_df, method2_estimated_df, method3_estimated_df, method4_estimated_df,
-                                     time_var = "period", id_var = "entry", treat_time_var = "Treatment_Period",
-                                     pred_var = "point.pred", counterfac_var = "counter_factual",
-                                     constrained = T, intercept_allowed = T) {
+reduce_pred_list <- function(pred_list, time_var = "period", 
+                                 id_var = "entry", treat_time_var = "Treatment_Period",
+                                 pred_var = "point.pred",
+                             outcome_var="response",
+                             counterfac_var = "counter_factual"){
+  tib_out=pred_list %>% 
+    purrr::reduce(dplyr::left_join, 
+                  by=c(id_var, time_var, treat_time_var,outcome_var)) %>%
+    dplyr::rename(
+      !!purrr::set_names(tidyselect::contains(pred_var), 
+                         c(glue::glue("m_pred{i}", 
+                                      i=seq_along(pred_list))))) %>%
+    dplyr::select(
+      tidyselect::all_of(c(time_var, id_var,treat_time_var,outcome_var,
+                           c(glue::glue("m_pred{i}", 
+                                        i=seq_along(pred_list))))))
+  if(!is.null(counterfac_var)){
+    tib_out=tib_out %>% 
+      dplyr::inner_join(pred_list[[1]] %>% 
+                          dplyr::select(tidyselect::all_of(c(counterfac_var,
+                                                           time_var,id_var,
+                                                           "cf_point.effect",
+                                                           "cf_pct.effect"))),
+                        by=c(time_var, id_var))
+  }
+  
+  return(tib_out)
+  
+}
+
+
+weight_solver<-function(post_treat_combined_df,intercept_allowed,constrained,
+                        method_df_names,counterfac_var ){
+  x=post_treat_combined_df %>% 
+    dplyr::select(tidyselect::contains("m_pred")) %>%
+    as.matrix()
+  
+  if(intercept_allowed) x=cbind(1,x)
+  
+  r_inv <- tryCatch({
+    solve(chol(t(x) %*% x))
+  }, error=function(e){
+    "Failure"
+  })
+  
+  c=cbind(rep(1, length(method_df_names)), diag(length(method_df_names)))
+  
+  if(intercept_allowed) c=t(cbind(0, rbind(1, diag(length(method_df_names)))))
+  
+  b <- c(1, rep(0, length(method_df_names)))
+  d <- t(post_treat_combined_df %>% pull(!!as.name(counterfac_var))) %*% x
+  nn2 <- sqrt(norm(d, "2"))
+  weight_vec=tryCatch( 
+    {
+      constr_weights_sol=solve.QP(Dmat = r_inv * nn2, factorized = TRUE, 
+                                  dvec = d / (nn2^2), Amat = c, bvec = b, meq = 1)
+      
+      
+      if(!constrained) constr_weights_sol$unconstrained.solution
+      else constr_weights_sol$solution
+      
+      },
+    error=function(e){
+      if(intercept_allowed){
+        error_out=c(0,rep(1/length(method_df_names), length(method_df_names)))
+      } else  rep(1/length(method_df_names), length(method_df_names))
+    })
+  
+ 
+  
+  
+  return(weight_vec)
+}
+
+
+
+ensemble_placebo_weights <- function(method_names, combined_methods_df, indiv_weights,
+                                     constrained, intercept_allowed, time_var, 
+                                     id_var, treat_time_var, counterfac_var) {
   
   # Estimates the weights for an ensemble using linear regression on a placebo set
   # This method is, as of now, highly specific -- intended for a placebo data set
@@ -29,365 +102,158 @@ ensemble_placebo_weights <- function(method1_estimated_df, method2_estimated_df,
   
   # Output
   # weights, as a 4x1 (num methods X 1) vector, from an unconstrained linear reg
-  combined_methods_df <- method1_estimated_df %>%
-    dplyr::select(
-      !!as.name(time_var), !!as.name(id_var), !!as.name(treat_time_var),
-      !!as.name(pred_var), !!as.name(counterfac_var)
-    ) %>%
-    rename(m1_pred = !!as.name(pred_var)) %>%
-    left_join(
-      method2_estimated_df %>%
-        dplyr::select(!!as.name(time_var), !!as.name(id_var), !!as.name(pred_var)) %>%
-        rename(m2_pred = !!as.name(pred_var)),
-      by = c(id_var, time_var)
-    ) %>%
-    left_join(
-      method3_estimated_df %>%
-        dplyr::select(!!as.name(time_var), !!as.name(id_var), !!as.name(pred_var)) %>%
-        rename(m3_pred = !!as.name(pred_var)),
-      by = c(id_var, time_var)
-    ) %>%
-    left_join(
-      method4_estimated_df %>%
-        dplyr::select(!!as.name(time_var), !!as.name(id_var), !!as.name(pred_var)) %>%
-        rename(m4_pred = !!as.name(pred_var)),
-      by = c(id_var, time_var)
-    )
-  
+  #first, some cleaning to keep only the relevant columns
+    
   # Find the weights of the three methods that best fit the data in the post period
   # For now, we do this with simple linear regression and no constraints
   post_treat_combined_df <- combined_methods_df %>% filter(!!as.name(time_var) >= !!as.name(treat_time_var))
-  x=as.matrix(cbind(
-    post_treat_combined_df %>% pull(m1_pred),
-    post_treat_combined_df %>% pull(m2_pred),
-    post_treat_combined_df %>% pull(m3_pred),
-    post_treat_combined_df %>% pull(m4_pred)
-  ))
   
-  if(intercept_allowed) x=cbind(1,x)
+  #estimate one set of weights for each method, not unit specific
+  if(indiv_weights){
+    list_to_ensemble=post_treat_combined_df %>% split(.[[id_var]])
+    tib_result=furrr::future_map(.x=list_to_ensemble,
+                      .f=~weight_solver(.x,intercept_allowed,
+                                        constrained,
+                                        method_names,counterfac_var)) %>%
+      dplyr::bind_rows() %>% 
+      t() %>% 
+      tibble::as_tibble(rownames = id_var, .name_repair="unique")  %>% 
+      setNames(c("entry",paste0("V", seq_len(ncol(.)))))
+    
+    if(intercept_allowed){
+      tib_result=tib_result %>% dplyr::rename(Intercept="V1")
+    }
+    
+    return(tib_result %>%
+      dplyr::rename(
+        !!purrr::set_names(tidyselect::contains("V"), 
+                           c(glue::glue("m_weight{i}", 
+                                        i=seq_along(method_names))))))
+    
+    
+   
+  }else{
+    df_result=weight_solver(post_treat_combined_df,intercept_allowed,constrained,
+                  method_names,counterfac_var) %>% 
+      as.list() %>%
+      data.frame()
+    
+    tib_result=df_result %>% 
+      tibble::tibble(.name_repair = "universal") %>% 
+      setNames(c(paste0("V", seq_len(ncol(.)))))
+      
+
+      if(intercept_allowed){
+        tib_result=tib_result %>% dplyr::rename(Intercept="V1")
+      }
+    return(tib_result %>%
+             dplyr::rename(
+               !!purrr::set_names(tidyselect::contains("V"), 
+                                  c(glue::glue("m_weight{i}", 
+                                               i=seq_along(method_names))))))
+  }
+}
+
+
+placebo_estimation <- function(method_name, placebo_data,...){
+  #define the estimator call, and apply. MC is the only exception to the rule
+  if(method_name=="mc"){
+    return(estimate_gsynth_series(placebo_data, estimator="mc",...))
+  }
+  estimator_call=paste("estimate",method_name,"series", sep="_")
+  return(do.call(estimator_call, list(placebo_data,...)))
+}
+
+
+estimate_ensemble <- function(method_names, true_data, pred_list,
+                              constrained = T, intercept_allowed = T,  
+                              indiv_weights=F, time_var = "period", 
+                              id_var = "entry", outcome_var="response",
+                              treat_time_var = "Treatment_Period",
+                              pred_var = "point.pred", 
+                              counterfac_var = "counter_factual"){
+  
+  #First step, create a placebo dataset from true_data via matching
+  placebo_data=create_placebo_df(true_data)
+  
+  unit_mapping=placebo_data %>% 
+    dplyr::filter(!is.na(Treatment_Period)) %>%
+    dplyr::distinct(entry, Treatment_Unit)
+  
+  #Next, estimate the counterfactual series for each method
+  estimates_list=furrr::future_map(.x=method_names, .f=placebo_estimation,
+                        placebo_data = placebo_data)
+  names(estimates_list)=method_names
+  
+  #Combine the list of estimates (one per method) into a single tibble
+  combined_pred<- reduce_pred_list(estimates_list)
+  
+  #Estimate the weights on each of the methods
+  method_weights<- 
+    ensemble_placebo_weights(method_names, combined_methods_df=combined_pred, 
+                             indiv_weights=indiv_weights,
+                           constrained+constrained, 
+                           intercept_allowed=intercept_allowed,
+                           time_var = time_var, 
+                           id_var = id_var, treat_time_var = treat_time_var,
+                           counterfac_var = counterfac_var)
+  
+
+  #combine the existing estimates on true data into 1 tibble to extract preds
+  
+  combined_true_methods=reduce_pred_list(pred_list)
+  if(indiv_weights){
+    matched_weights=unit_mapping %>% 
+      dplyr::inner_join(method_weights %>% dplyr::mutate_all((as.numeric)),
+                        by=id_var) %>%
+      dplyr::select(-tidyselect::all_of(id_var)) %>%
+      dplyr::rename(entry="Treatment_Unit")
+    
+    combined_true_methods=combined_true_methods %>%
+      dplyr::left_join(matched_weights, by=id_var)
+    
+    return(weighted_predictions(combined_true_methods, intercept_allowed))
+    
+  }else{
+    combined_true_methods=combined_true_methods %>% 
+      dplyr::bind_cols(method_weights)
+    
+    
+    return(weighted_predictions(combined_true_methods, intercept_allowed))
+  }
   
   
-  r_inv <- solve(chol(t(x) %*% x))
-  c=cbind(rep(1, 4), diag(4))
   
-  if(intercept_allowed) c=t(cbind(0, rbind(1, diag(4))))
+}
+
+
+weighted_predictions <- function(data, intercept){
+  method_preds=data %>% 
+    dplyr::select(tidyselect::contains("m_pred")) %>%
+    as.matrix()
   
-  b <- c(1, rep(0, 4))
-  d <- t(post_treat_combined_df %>% pull(!!as.name(counterfac_var))) %*% x
-  nn2 <- sqrt(norm(d, "2"))
+  if(intercept) method_preds=cbind(1,method_preds)
   
+  method_weights=data %>% 
+    dplyr::select(tidyselect::matches("Intercept|m_weight")) %>%
+    as.matrix()
   
-  constr_weights_sol <- solve.QP(Dmat = r_inv * nn2, factorized = TRUE, dvec = d / (nn2^2), Amat = c, bvec = b, meq = 1)
-  weight_vec <- constr_weights_sol$solution
+  data=data %>% 
+    dplyr::mutate("point.pred"=c(rowSums(method_preds * method_weights)),
+                  "point.effect"=response-point.pred)
   
-  if(!constrained) weight_vec <- constr_weights_sol$unconstrained.solution
+  return(data)
   
-  
-  return(weight_vec)
+}
+
+preprocess_ensemble_input <- function(estimated_list){
+  if(inherits(estimated_list[[1]], "list")){
+    estimated_list <- lapply(seq_len(min(lengths(estimated_list))), 
+                         function(x) return(lapply(estimated_list, `[[`, x)))
+  }
+
+  return(estimated_list)
 }
 
 
 
-# Create a simple, alterative function for using the median as a naive ensemble... mean seems to do fairly well
-ensembled_predictor <- function(method1_estimated_df, method2_estimated_df, method3_estimated_df, method4_estimated_df, est_weights,
-                                time_var = "period", id_var = "entry", treat_time = "Treatment_Period",
-                                pred_var = "point.pred", counterfac_var = "counter_factual",
-                                outcome_var = "response") {
-  # Estimates the ensemble using weights and predictions from 3 methods
-  
-  
-  # Args
-  # method1_estimated_df: long-form dataframe of the estimated and counterfactual point predictions for a given method
-  # method2_estimated_df, method3_estimated_df distinct methods of the same form.
-  # est_weights: 5 (num methods) by 1 vector of numeric weights to be placed on the predictions of each method
-  # id_var: column name of numeric, unique ID representing the entry (unit)
-  # time_var:column name of numeric period number indicating the time period, in increasing order (eg 0 is the first time, 120 is the last)
-  # treat_time_var: string variable for the column indicating when that unit was treated
-  # pred_var: string name of the point estimate column in the methodX dataframe
-  # counterfac_var: name of var for the counterfactual value for the time series, if available (otherwise, NULL)
-  # outcome_var: the original y variable the methods were estimating
-  
-  # Output
-  # Dataframe with the ensemble predictions by id, period for all time, as well as point effects and counterfactual effects
-  # should work even if counter_fac is null
-  if (length(est_weights) == 4) {
-    ensemble_output <- method1_estimated_df %>%
-      dplyr::select(
-        !!as.name(time_var), !!as.name(id_var), !!as.name(treat_time),
-        !!as.name(outcome_var)
-      ) %>%
-      mutate(
-        point.pred = as.vector(as.matrix(
-          cbind(
-            method1_estimated_df %>% pull(!!as.name(pred_var)),
-            method2_estimated_df %>% pull(!!as.name(pred_var)),
-            method3_estimated_df %>% pull(!!as.name(pred_var)),
-            method4_estimated_df %>% pull(!!as.name(pred_var))
-          ) ) %*% est_weights) ) %>%
-      mutate(point.effect = !!as.name(outcome_var) - point.pred)
-  }
-  # if we have our 4 methods + intercept
-  if (length(est_weights) == 5) {
-    ensemble_output <- method1_estimated_df %>%
-      dplyr::select(
-        !!as.name(time_var), !!as.name(id_var), !!as.name(treat_time),
-        !!as.name(outcome_var)
-      ) %>%
-      mutate(
-        point.pred = as.vector(cbind(1, as.matrix(
-          cbind(
-            method1_estimated_df %>% pull(!!as.name(pred_var)),
-            method2_estimated_df %>% pull(!!as.name(pred_var)),
-            method3_estimated_df %>% pull(!!as.name(pred_var)),
-            method4_estimated_df %>% pull(!!as.name(pred_var))
-          )
-        )) %*% est_weights)
-      ) %>%
-      mutate(point.effect = !!as.name(outcome_var) - point.pred)
-  }
-  
-  
-  if (!is.null(counterfac_var)) {
-    ensemble_output <- ensemble_output %>%
-      inner_join(
-        method1_estimated_df %>%
-          dplyr::select(id_var, time_var, counterfac_var),
-        by = c(id_var, time_var)
-      ) %>%
-      mutate(
-        cf_point.effect = (!!as.name(outcome_var) - !!as.name(counterfac_var)),
-        cf_pct.effect = (!!as.name(outcome_var) / !!as.name(counterfac_var)) - 1
-      )
-  }
-  
-  return(ensemble_output)
-}
-
-
-
-
-
-
-
-forecomb_helper <- function(indiv_df, time_var = "period", id_var = "entry", treat_time_var = "Treatment_Period",
-                            pred_var = "point.pred", counterfac_var = "counter_factual") {
-  
-  # helper function to estimate the weights for an ensemble using several methods on a placebo set
-  # given a single "treated" (placebo) entry, find the weights on the post period estimates from each
-  # method that best fit the counterfactual, and return these in a df
-  
-  
-  # Args
-  # indiv_df: dataframe formatted in the main function (auto_forecomb_weights_static)
-  # id_var: column name of numeric, unique ID representing the entry (unit)
-  # time_var:column name of numeric period number indicating the time period, in increasing order (eg 0 is the first time, 120 is the last)
-  # treat_time_var: string variable for the column indicating when that unit was treated
-  # pred_var: string name of the point estimate column in the methodX dataframe
-  # counterfac_var: name of var for the counterfactual value for the time series, if available (otherwise, NULL)
-  
-  # Output
-  # weights, as a 5x1 (num methods+1 X 1) vector, with intercepts and optimal weights
-  # if an error is thrown, a simple average with no intercept is used (can change this in the catch loop in forecomb_helper function)
-  # Errors arise usually because some of the weights are "moving" (ex, the median of 4 methods will be different over time)
-  
-  # create the inputs to forecomb pacakge from a DF of individual data
-  outcome_vec <- indiv_df %>% pull(!!as.name(counterfac_var))
-  treatment_time <- indiv_df %>%
-    distinct(!!as.name(treat_time_var)) %>%
-    pull()
-  
-  # create a matrix of the model predictions
-  model_pred_mat <- cbind(
-    indiv_df %>% pull(m1_pred),
-    indiv_df %>% pull(m2_pred),
-    indiv_df %>% pull(m3_pred),
-    indiv_df %>% pull(m4_pred)
-  ) %>% as.matrix()
-  
-  # use the foreccomb package to structure the data for estimation
-  
-  # For placebo, where ground truth is known, just find the optimal combination for "post treat" -- where methods were not trained on
-  forecomb_data <- foreccomb(observed_vector = outcome_vec[- (1:treatment_time)], prediction_matrix = model_pred_mat[- (1:treatment_time), ])
-  
-  # attempt to fit the model to find the best weights
-  # potential errors here include too few post-treat time to fit, depending on methods.
-  # in any case, the simple average is always computable, so if we have an error, we use that
-  optim_model <- tryCatch({
-    auto_combine(forecomb_data)
-  },
-  error = function(cond) {
-    comb_SA(forecomb_data)
-  }
-  )
-  
-  # Several methods either return matrices of weights (for various metrics, weird format however)
-  # or char vector informing us there are no static weights.
-  # If that occurs, use simple average (no intercept)
-  # if the weights exist and seem normal by dimension, use those
-  if (is.vector(optim_model$Weights) & length(optim_model$Weights) == 4) {
-    # TA, Med, WA, comb_CSR (this gives large numbers...) all do not return weight vectors
-    optim_weights <- tibble(
-      weight_1 = optim_model$Weights[1], weight_2 = optim_model$Weights[2],
-      weight_3 = optim_model$Weights[3], weight_4 = optim_model$Weights[4],
-      intercept = ifelse(is.null(optim_model$Intercept), 0, optim_model$Intercept)
-    )
-  }
-  else { # doesn't seem to be a good way to remove specific methods from the grid search
-    optim_model <- comb_SA(forecomb_data)
-    optim_weights <- tibble(
-      weight_1 = optim_model$Weights[1], weight_2 = optim_model$Weights[2],
-      weight_3 = optim_model$Weights[3], weight_4 = optim_model$Weights[4],
-      intercept = ifelse(is.null(optim_model$Intercept), 0, optim_model$Intercept)
-    )
-  }
-  
-  return(optim_weights)
-}
-
-# Fix allow for additional methods to foreccomb via ...
-# Also, which metric should we be using?
-auto_forecomb_weights_static <- function(method1_estimated_df, method2_estimated_df, method3_estimated_df, method4_estimated_df,
-                                         time_var = "period", id_var = "entry", treat_time_var = "Treatment_Period",
-                                         pred_var = "point.pred", counterfac_var = "counter_factual") {
-  
-  # Estimates the weights for an ensemble using several methods on a placebo set
-  # This method is, as of now, highly specific -- intended for a placebo data set
-  # with fake treatment (but zero treatment effect). Given this structure, we have fit several SCM methods
-  # on this placebo set to estimate the TE (hopefully close to zero)
-  # This method ignores any pre-treat information and outputs weights on the post-treatment point predictions
-  # from each method that yields the closest value to the truth. Thus, we must know the truth to compute these.
-  
-  
-  # Args
-  # method1_estimated_df: long-form dataframe of the estimated and counterfactual point predictions for a given method
-  # method2_estimated_df, method3_estimated_df, method4_estimated_df, distinct methods of the same form.
-  # id_var: column name of numeric, unique ID representing the entry (unit)
-  # time_var:column name of numeric period number indicating the time period, in increasing order (eg 0 is the first time, 120 is the last)
-  # treat_time_var: string variable for the column indicating when that unit was treated
-  # pred_var: string name of the point estimate column in the methodX dataframe
-  # counterfac_var: name of var for the counterfactual value for the time series, if available (otherwise, NULL)
-  
-  # Output
-  # weights, as a 5x1 (num methods+1 X 1) vector, with intercepts and optimal weights
-  # if an error is thrown, a simple average with no intercept is used (can change this in the catch loop in forecomb_helper function)
-  
-  
-  # create a dataframe with the predictions from each of our 4 methods, along with
-  # identifying information
-  combined_methods_df <- method1_estimated_df %>%
-    dplyr::select(
-      !!as.name(time_var), !!as.name(id_var), !!as.name(treat_time_var),
-      !!as.name(pred_var), !!as.name(counterfac_var)
-    ) %>%
-    rename(m1_pred = !!as.name(pred_var)) %>%
-    left_join(
-      method2_estimated_df %>%
-        dplyr::select(!!as.name(time_var), !!as.name(id_var), !!as.name(pred_var)) %>%
-        rename(m2_pred = !!as.name(pred_var)),
-      by = c(id_var, time_var)
-    ) %>%
-    left_join(
-      method3_estimated_df %>%
-        dplyr::select(!!as.name(time_var), !!as.name(id_var), !!as.name(pred_var)) %>%
-        rename(m3_pred = !!as.name(pred_var)),
-      by = c(id_var, time_var)
-    ) %>%
-    left_join(
-      method4_estimated_df %>%
-        dplyr::select(!!as.name(time_var), !!as.name(id_var), !!as.name(pred_var)) %>%
-        rename(m4_pred = !!as.name(pred_var)),
-      by = c(id_var, time_var)
-    )
-  
-  # for each ID (in parallel), send the dataframe over with the counterfactual (what we are trying to fit)
-  # as well as the 4 method predictions, which we want to weight to get as close to the counterfactual as possible
-  # store resulting weights and intercept in a df (num treated units x num_methods+1)
-  weights_by_id_df <- combined_methods_df %>%
-    split(.[[id_var]]) %>%
-    furrr::future_map(~ forecomb_helper(.)) %>%
-    do.call(bind_rows, .) %>%
-    mutate(!!as.name(id_var) := method1_estimated_df %>% distinct(!!as.name(id_var)) %>% pull())
-  
-  return(weights_by_id_df)
-}
-
-
-# Fix allow for additional methods to foreccomb via ...
-# Also, which metric should we be using?
-forecomb_predictor_static <- function(method1_estimated_df, method2_estimated_df, method3_estimated_df, method4_estimated_df,
-                                      placebo_data, est_indiv_weights,
-                                      time_var = "period", id_var = "entry", treat_time_var = "Treatment_Period",
-                                      pred_var = "point.pred", counterfac_var = "counter_factual",
-                                      outcome_var = "response") {
-  
-  # Estimates the ensemble using weights and predictions from 4 methods
-  
-  
-  # Args
-  # method1_estimated_df: AB (true treated) long-form dataframe of the estimated and counterfactual point predictions for a given method
-  # method2_estimated_df, method3_estimated_df, method4_estimated_df distinct methods of the same form, AB data!!
-  # est_indiv_weights: 5 (num methods+intercept) by 1 vector of numeric weights to be placed on the predictions of each method
-  # placebo_data: the full placebo dataset (output of create_placebo_df, or same format), to identify which True treated
-  # observations the weights belong to.
-  # id_var: column name of numeric, unique ID representing the entry (unit)
-  # time_var:column name of numeric period number indicating the time period, in increasing order (eg 0 is the first time, 120 is the last)
-  # treat_time_var: string variable for the column indicating when that unit was treated
-  # pred_var: string name of the point estimate column in the methodX dataframe
-  # counterfac_var: name of var for the counterfactual value for the time series, if available (otherwise, NULL)
-  # outcome_var: the original y variable the methods were estimating
-  
-  # Output
-  # Dataframe with the ensemble predictions by id, period for all time, as well as point effects and counterfactual effects
-  # should work even if counter_fac is null
-  
-  # Each "treated" entry in our placebo set now has an estimated weight.
-  # We want to find the true treated unit that corresponds to this placebo treated unit, so
-  # we can assign them the proper weight
-  est_indiv_weights_match <- est_indiv_weights %>%
-    left_join(
-      placebo_data %>% dplyr::select(!!as.name(id_var), Treatment_Unit) %>% distinct(entry, .keep_all = T),
-      by = id_var
-    ) %>%
-    select(-!!as.name(id_var)) %>%
-    rename(!!as.name(id_var) := Treatment_Unit)
-  
-  # For each true treated prediction, combine according to the unit specific weights
-  # create a dataframe that has relevant period/entry long form, append the weights by Id
-  # then apply the weights over each method, and compute treatment effects
-  ensemble_output <- method1_estimated_df %>%
-    dplyr::select(
-      !!as.name(time_var), !!as.name(id_var), !!as.name(treat_time_var),
-      !!as.name(outcome_var)
-    ) %>%
-    left_join(
-      est_indiv_weights_match,
-      by = id_var
-    ) %>%
-    mutate(
-      point.pred = method1_estimated_df %>% pull(!!as.name(pred_var)) * weight_1 +
-        method2_estimated_df %>% pull(!!as.name(pred_var)) * weight_2 +
-        method3_estimated_df %>% pull(!!as.name(pred_var)) * weight_3 +
-        method4_estimated_df %>% pull(!!as.name(pred_var)) * weight_4 +
-        intercept
-    ) %>%
-    mutate(
-      point.effect = !!as.name(outcome_var) - point.pred,
-      pct.effect = (!!as.name(outcome_var) / point.pred) - 1
-    )
-  
-  # if coutnerfactual AB data exists, we can compute that here and add it to our output
-  if (!is.null(counterfac_var)) {
-    ensemble_output <- ensemble_output %>%
-      inner_join(
-        method1_estimated_df %>%
-          dplyr::select(!!as.name(id_var), !!as.name(time_var), !!as.name(counterfac_var)),
-        by = c(id_var, time_var)
-      ) %>%
-      mutate(
-        cf_point.effect = (!!as.name(outcome_var) - !!as.name(counterfac_var)),
-        cf_pct.effect = (!!as.name(outcome_var) / !!as.name(counterfac_var)) - 1
-      )
-  }
-  
-  return(ensemble_output)
-}

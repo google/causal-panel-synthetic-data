@@ -2,6 +2,54 @@ source(here("r_code/analysis_visualizations.R"))
 source(here("r_code/factor_dgp.R"))
 source(here("r_code/seed_metrics.R"))
 
+
+# Multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  require(grid)
+  
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+  
+  numPlots = length(plots)
+  
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                     ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+  
+  if (numPlots==1) {
+    print(plots[[1]])
+    
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+    
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+      
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+
+
 gt_set_up <- function(dataset_name, method_vec){
   load(here::here("Data", "Variations",dataset_name ))
   data_name=stringr::str_remove(tolower(dataset_name), ".rdata")
@@ -42,7 +90,7 @@ gt_set_up <- function(dataset_name, method_vec){
 
 
 
-markdown_estimation_output<-function(tib_to_gt_data, datalist, plot_indiv=T,
+markdown_estimation_output<-function(tib_to_gt_data, datalist, plot_indiv=F,
                                      method_vec){
   load(here::here("Data", "Variations",datalist ))
   
@@ -68,12 +116,18 @@ markdown_estimation_output<-function(tib_to_gt_data, datalist, plot_indiv=T,
   
   random_data=sample(1:n_seeds,1)
   if(plot_indiv){
-    all_cf_plots= lapply(method_vec, indiv_cf_plotter,
-                         rand_int=random_data, num_ex=2)
+    plot_list=lapply(method_vec, indiv_cf_plotter,rand_int=random_data, num_ex=2)
+    # browser()
+    # args.list <- c(lapply(method_vec, indiv_cf_plotter,
+    #                       rand_int=random_data, num_ex=2) ,
+    #                list(nrow=5,ncol=3))
+    # do.call(gridExtra::grid.arrange,args.list )
     
-    indiv_cf_combined=c(all_cf_plots)
+    # multiplot(lapply(method_vec, indiv_cf_plotter,
+    #                  rand_int=random_data, num_ex=2), cols= 3)
     
-    lapply(indiv_cf_combined,print)
+    par(mfrow=c(5,3))
+    lapply(plot_list, print)
   }
   
   gridExtra::grid.arrange(tsfeature_pc_by_treatment_plot(formatted_data[[random_data]])+
