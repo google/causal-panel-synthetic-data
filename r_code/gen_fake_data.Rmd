@@ -196,7 +196,6 @@ gen_data <-
     a <- tibble(division_country = 1:N,
                 a_i = rnorm(n = N, mean = 0.1748,
                             sd = 1.4678))
-
     #
     fake_data <-
       inner_join(a, verticalxwalk, by = "division_country") %>%
@@ -506,7 +505,6 @@ gen_data <-
 ```{r A}
 if(params$A){
   no_effect <- future_map_dfr(.x = seeds, .f = ~gen_data(N = 1500, prop_treated = 0.8, tau_one_zero = 0.0, gamma = 0.0, rho_y = 0.7, N_time = 24, type = "observables", seed = .x))
-
   for(i in 1:n_seeds){
     readr::write_csv(x = no_effect$data[[i]], 
                      path = glue::glue('./A/synthetic_data_A_{stringr::str_pad(string = as.character(i), pad="0", width = 3)}.csv'))
@@ -516,11 +514,7 @@ if(params$A){
 }else{
   no_effect <- readRDS('./A/no_effect.RDS')
 }
-
-
 no_effect
-
-
 ```
 
 The mean true lift is `r scales::percent(mean(no_effect$true_lift))`.
@@ -528,18 +522,13 @@ The mean true lift is `r scales::percent(mean(no_effect$true_lift))`.
 # B: Small gamma
 
 ```{r small_gamma, eval=params$B}
-
 small_gamma <- future_map_dfr(.x = seeds, .f = ~gen_data(N = 1500, prop_treated = 0.8, tau_one_zero = 0.05, gamma = 0.0009, rho_y = 0.7, N_time = 24, type = "observables", seed = .x))
-
 for(i in 1:n_seeds){
   readr::write_csv(x = small_gamma$data[[i]], 
                    path = glue::glue('./B/synthetic_data_B_{stringr::str_pad(string = as.character(i), pad="0", width = 3)}.csv'))
 }
-
 saveRDS(small_gamma, './B/small_gamma.RDS')
-
 small_gamma
-
 ```
 
 
@@ -548,19 +537,13 @@ The mean true lift is `r scales::percent(mean(small_gamma$true_lift))`.
 # C: Bigger gamma
 
 ```{r bigger_gamma, eval=params$C}
-
 bigger_gamma <- future_map_dfr(.x = seeds, .f = ~gen_data(N = 1500, prop_treated = 0.8, tau_one_zero = 0.05, gamma = 0.01, rho_y = 0.7, N_time = 24, type = "observables", seed = .x))
-
-
 for(i in 1:n_seeds){
   readr::write_csv(x = bigger_gamma$data[[i]], 
                    path = glue::glue('./C/synthetic_data_C_{stringr::str_pad(string = as.character(i), pad="0", width = 3)}.csv'))
 }
-
 saveRDS(bigger_gamma, './C/bigger_gamma.RDS')
-
 bigger_gamma
-
 ```
 
 The mean true lift is `r scales::percent(mean(bigger_gamma$true_lift))`.
