@@ -152,7 +152,8 @@ individual_cf_helper<-function(data_inp, id_inp, treat_inp,
 
 
 
-plot_full_gap<-function(est_data_inp,  time_var="period", id_var="entry",
+plot_full_gap<-function(est_data_inp, data_type=c("raw", "tot"), 
+                        time_var="period", id_var="entry",
                         outcome_var="response", prediction_var="point.pred",
                         treat_period_var="Treatment_Period", start_plot=-20,
                         pct_flag=F){
@@ -162,9 +163,21 @@ plot_full_gap<-function(est_data_inp,  time_var="period", id_var="entry",
     single_dataset=T
     est_data_inp=list(est_data_inp)
   }
-  #Step 1: make a call to the jackknife function 
-  gap_full=furrr::future_map(est_data_inp, compute_tot_se_jackknife, 
-                             stat_in="mean", post_treat_only=F)
+  
+  # #Step 1: make a call to the jackknife function if we have raw data
+  # if (missing(data_type)) {
+  #   stop("Please input argument data_type as `raw` or `tot`.")
+  # } else{
+  #   data_type <- match.arg(data_type)
+  # }
+  
+  if(data_type=="raw"){
+    gap_full=furrr::future_map(est_data_inp, compute_tot_se_jackknife, 
+                               stat_in="mean", post_treat_only=F)
+  }else{
+    gap_full=est_data_inp
+  }
+  
   gap_full_forplot=furrr::future_map(gap_full, 
                                      function(x){
                                        return(

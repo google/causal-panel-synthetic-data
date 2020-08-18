@@ -27,8 +27,8 @@ plan(multiprocess, workers=availableCores()-1)
 source(here("r_code/markdown_figure_gen.R"))
 
 dataset_names=setdiff(list.files(here::here("Data", "Variations")), "Old")
-methods_used=c("gsynth", "scdid", "scdid_uncon", "scm", "gfoo",
-               "mc", "causalimpact")
+methods_used=c("gsynth","gsynth_debiased" ,"scdid", "scdid_uncon", "scm", "gfoo",
+               "mc", "causalimpact", "bart")
 for_gt=lapply(dataset_names, gt_set_up, method_vec=methods_used)
 
 markdown_estimation_output(for_gt[[1]], dataset_names[[1]],

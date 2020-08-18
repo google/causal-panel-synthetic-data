@@ -2,6 +2,186 @@ pacman::p_load(dplyr, furrr, tidyr, stats,
                caret, glmnet, bigstatsr, forecast)
 
 
+library(dbarts)
+
+
+
+
+
+
+
+
+
+library(gsynth)
+library(panelView)
+library(dbarts)
+library(ggplot2)
+library(dplyr)
+ci <- 0.75
+data(gsynth)
+panelView(Y ~ D, data = simdata,  index = c("id","time"), pre.post = TRUE) 
+
+
+controls <-
+  simdata %>% group_by(id) %>% summarise(D = sum(D)) %>% filter(D == 0) %>% 
+  pull(id)
+
+treated <- simdata %>% dplyr::select(id) %>% distinct() %>% 
+  filter(!(id %in% controls)) %>% pull(id)
+
+control_df <- simdata %>% dplyr::select(id, time, Y) %>%
+  filter(id %in% controls) %>% 
+  tidyr::pivot_wider(names_from = id, values_from = Y, names_prefix = "Y_")
+
+#long form df, with each row and id_time combination, and columns Y are the output
+#Y_# means the output of control unit #
+#Note that for each treated unit we essentially have their 20 periods
+# and the 20 periods of every control unit
+#IDs only exist for the treated
+analisys_df <- simdata %>% dplyr::select(id, time, Y, X1, X2) %>%
+  filter(id %in% treated) %>% 
+  inner_join(control_df, by = "time") %>% 
+  mutate(id = as.factor(id))
+
+#store only the pre periods
+pre_data <- analisys_df %>%
+  filter(time < 21)
+#format for bart
+train_data <- dbartsData(pre_data %>% dplyr::select(-Y), pre_data$Y)
+
+nskip <- 20000
+nchain <- 8
+ndpost <- 4000
+keepevery <- (ndpost * nchain)/2000
+
+#fir model to training data (pre period)
+bartFit <-
+  bart2(
+    train_data,
+    keepTrees = TRUE,
+    combineChains = TRUE,
+    n.burn = nskip,
+    n.samples = ndpost,
+    n.thin = keepevery,
+    n.chains = nchain,
+    n.threads = nchain,
+    verbose = FALSE
+  )
+
+
+df_plot <- tibble(sigma = bartFit$sigma) %>% mutate(draw=1:n()) 
+
+ggplot(data=df_plot, aes(y=sigma,x=draw)) + geom_line()
+
+neff_sigma <- coda::effectiveSize(x = df_plot$sigma)
+
+
+
+### Pre intervention
+
+#unique identifier for each entry time combination of TREATED units
+idxXwalk <- pre_data %>% 
+  dplyr::select(id, time) %>% 
+  mutate(idx = 1:n())
+
+#predict seems to output a 100 column df, with column presumably related to id above
+#Each row is a draw of this
+#so i think one row is one draw, with columns 1:20 being the predicted outcome 
+#treated 1, then 21:40 predicted of treated 2, etc
+y_hat_draws <- predict(bartFit, pre_data, group.by = pre_data$id) %>%
+  as.data.frame() %>%
+  mutate(draw = 1:n()) %>%
+  tidyr::pivot_longer(names_to = "idx",
+                      values_to = "y",
+                      -draw) %>%
+  mutate(idx = gsub(pattern = "V", replacement = "", x = idx, fixed = T),
+         idx = as.numeric(idx)) %>% 
+  inner_join(idxXwalk, by = "idx")
+
+
+
+
+
+y_hat <- y_hat_draws %>%
+  group_by(id, time) %>%
+  summarise(y_hat = median(y),
+            LB = quantile(y, (1-ci)/2),
+            UB = quantile(y, 1-(1-ci)/2))
+
+df_plot <- inner_join(pre_data, y_hat, by = c("id", "time"))
+
+ggplot(data = df_plot, aes(x=time, y=Y)) +
+  geom_ribbon(aes(ymin = LB, ymax = UB), alpha = 0.2, color = "blue") +
+  geom_line() +
+  facet_wrap(~id)
+
+### Post intervention
+
+post_data <- analisys_df %>%
+  filter(time >= 21) 
+
+idxXwalk <- post_data %>% 
+  dplyr::select(id, time) %>% 
+  mutate(idx = 1:n())
+
+
+#now using the post data, same thing
+#predict spits out a column for each treated unit*time combo in post t
+#this means we have row 1 = draw1, col1=treat1 time 1, col2=treat1 time 2, etc
+y_hat_draws_post <- predict(bartFit, post_data) %>%
+  as.data.frame() %>%
+  mutate(draw = 1:n()) %>%
+  tidyr::pivot_longer(names_to = "idx",
+                      values_to = "y",
+                      -draw) %>%
+  mutate(idx = gsub(pattern = "V", replacement = "", x = idx, fixed = T),
+         idx = as.numeric(idx)) %>% 
+  inner_join(idxXwalk, by = "idx")
+
+y_hat_post <- y_hat_draws_post %>%
+  group_by(id, time) %>%
+  summarise(y_hat = median(y),
+            LB = quantile(y, (1-ci)/2),
+            UB = quantile(y, 1-(1-ci)/2))
+
+
+df_plot_post <- inner_join(post_data, y_hat_post, by = c("id", "time"))
+df_plot <- dplyr::bind_rows(df_plot, df_plot_post)
+
+ggplot(data = df_plot, aes(x=time, y=Y)) +
+  geom_ribbon(aes(ymin = LB, ymax = UB), alpha = 0.2, color = "blue") +
+  geom_line() +
+  facet_wrap(~id)
+
+df_ate_pre <- y_hat_draws %>% 
+  inner_join(pre_data, by = c("id", "time")) %>% 
+  dplyr::select(y_hat = y, Y, draw, id, time) %>% 
+  mutate(tau_draw = Y - y_hat) %>% 
+  group_by(draw, time) %>% 
+  summarise(att_draw = mean(tau_draw)) %>% 
+  group_by(time) %>%
+  summarise(ATT = median(att_draw),
+            LB = quantile(att_draw, (1-ci)/2),
+            UB = quantile(att_draw, 1-(1-ci)/2))
+
+df_ate <- y_hat_draws_post %>% 
+  inner_join(post_data, by = c("id", "time")) %>% 
+  dplyr::select(y_hat = y, Y, draw, id, time) %>% 
+  mutate(tau_draw = Y - y_hat) %>% 
+  group_by(draw, time) %>% 
+  summarise(att_draw = mean(tau_draw)) %>% 
+  group_by(time) %>%
+  summarise(ATT = median(att_draw),
+            LB = quantile(att_draw, (1-ci)/2),
+            UB = quantile(att_draw, 1-(1-ci)/2)) %>% 
+  bind_rows(df_ate_pre)
+
+ggplot(data = df_ate, aes(x=time, y=ATT)) +
+  geom_ribbon(aes(ymin = LB, ymax = UB), alpha = 0.2, color = "blue") +
+  geom_line() +
+  geom_vline(xintercept = 21, linetype="dashed")
+
+
 
 
 #Ensemble usage

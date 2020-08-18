@@ -1,5 +1,5 @@
 pacman::p_load(dplyr, tibble, CausalImpact,gsynth,tidyr,Matrix, quadprog,
-               janitor, stats,readr,bigstatsr)
+               janitor, stats,readr,bigstatsr, dbarts)
 
 
 ############################################
@@ -696,6 +696,184 @@ scm_imputation <- function(treat_data, control_mat, treat_time){
   return(imputed_y)
 }
 
+
+
+
+
+estimate_bart_series <- function(data_full,
+                                 id_var = "entry",
+                                 time_var = "period",
+                                 treat_indicator = "treatperiod_0",
+                                 outcome_var = "target",
+                                 counterfac_var = "counter_factual",
+                                 ci=0.75,
+                                 ...){
+  #identify the subset of treated and control entries by their ID
+  tr_entries <- data_full %>%
+    dplyr::filter(!!as.name(treat_indicator) > 0) %>%
+    dplyr::distinct(!!as.name(id_var)) %>%
+    dplyr::pull() %>%
+    sort()
+  ct_entries <- setdiff(data_full %>% dplyr::distinct(!!as.name(id_var)) %>% dplyr::pull(), tr_entries)
+  
+  
+  # Gather the control and treatment subsets of the full data into separate dfs
+  control_data <- data_full %>% dplyr::filter(!!as.name(id_var) %in% ct_entries)
+  
+  treat_data <- data_full %>%
+    dplyr::filter(!!as.name(id_var) %in% tr_entries) %>%
+    dplyr::arrange(!!as.name(time_var), !!as.name(id_var)) %>%
+    dplyr::group_by(!!as.name(id_var)) %>%
+    dplyr::mutate(Treatment_Period = length(!!as.name(treat_indicator)) - sum(!!as.name(treat_indicator)) + 1) %>%
+    dplyr::ungroup()
+  
+  
+  # create the control data frame, each row is a time and column is an entry
+  # these will serve as contemporaenous covariates in the BART model
+  control_wide <-control_data %>% 
+    dplyr::select(tidyselect::all_of(c(time_var, id_var, outcome_var))) %>%
+    tidyr::pivot_wider(names_from = !!as.name(id_var), 
+                       values_from = !!as.name(outcome_var), 
+                       names_prefix = "Donor_")
+  #structure the data (both pre and post treatment) for estimation in bart
+  bart_full=treat_data %>%
+    dplyr::select(tidyselect::all_of(c(id_var, time_var, 
+                                       outcome_var, "Treatment_Period"))) %>%
+    dplyr::inner_join(control_wide, by=time_var) %>%
+    dplyr::mutate(fac_id=as.factor(!!as.name(id_var)))
+  
+  #estimate the pre and post period imputed values for our treatment units
+  bart_series=fit_bart(bart_full,  id_var = id_var,
+                       time_var = time_var,
+                       outcome_var = outcome_var,
+                       ci=ci) 
+  #define the effects as the actual outcome less the imputed prediction
+  bart_series=bart_series%>%
+    dplyr::rename(response=!!as.name(outcome_var)) %>%
+    dplyr::mutate(point.effect = response - point.pred,
+                  point.effect.lb=response - point.pred.ub,
+                  point.effect.ub=response - point.pred.lb)
+  #Add a column for counterfactual outcome and effects, if desired
+  if (!is.null(counterfac_var)) {
+    bart_series <- bart_series %>%
+      dplyr::inner_join(data_full %>%
+                          dplyr::select(tidyselect::all_of(c(id_var, time_var,
+                                                             counterfac_var))),
+                        by=c(id_var, time_var)) %>%
+      dplyr::mutate(
+        cf_point.effect = (response - !!as.name(counterfac_var)),
+        cf_pct.effect = (response / !!as.name(counterfac_var)) - 1
+      )
+  }
+  
+  # add a column with relative (pct) effect
+  bart_series <- bart_series %>% 
+    dplyr::mutate(pct.effect = (response / point.pred) - 1 ) 
+  
+  
+  return(bart_series)
+  
+}
+
+
+
+fit_bart<-function(full_data,
+                   id_var = "entry",
+                   time_var = "period",
+                   outcome_var = "target",
+                   ci=0.75){
+  
+  #store only the pre periods, and post periods separately
+  data_pre <- full_data %>%
+    filter(!!as.name(time_var) < Treatment_Period)
+  data_post <- full_data %>%
+    filter(!!as.name(time_var) >= Treatment_Period)
+  #format for bart
+  train_data <- dbarts::dbartsData(data_pre %>% 
+                                     dplyr::select(-tidyselect::all_of(
+                                       c(outcome_var, id_var, "Treatment_Period")
+                                     )), 
+                                   data_pre %>%
+                                     dplyr::select(tidyselect::all_of(outcome_var)) %>%
+                                     dplyr::pull())
+  
+  nskip <- 20000
+  nchain <- 8
+  ndpost <- 4000
+  keepevery <- (ndpost * nchain)/2000
+  
+  #fit model to training data (pre period)
+  bartFit <-
+    dbarts::bart2(
+      train_data,
+      keepTrees = TRUE,
+      combineChains = TRUE,
+      n.burn = nskip,
+      n.samples = ndpost,
+      n.thin = keepevery,
+      n.chains = nchain,
+      n.threads = nchain,
+      verbose = FALSE
+    )
+  
+  #Impute the missing values using draws from the posterior distributions
+  pre_imputation <- predict_counterfactuals(bartFit, data_pre,
+                                            time_var=time_var,
+                                            ci=ci) %>%
+    dplyr::select(tidyselect::all_of(c(id_var, time_var, outcome_var,
+                                       "Treatment_Period", "point.pred",
+                                       "point.pred.lb","point.pred.ub")))
+  
+  post_imputation <- predict_counterfactuals(bartFit, data_post,
+                                             time_var=time_var,
+                                             ci=ci) %>%
+    dplyr::select(tidyselect::all_of(c(id_var, time_var, outcome_var,
+                                       "Treatment_Period", "point.pred",
+                                       "point.pred.lb","point.pred.ub")))
+  #combine the predictions for pre and post into a single tibble
+  imputed_data=dplyr::bind_rows(pre_imputation, post_imputation) %>%
+    dplyr::arrange(!!as.name(id_var), !!as.name(time_var))
+  
+  return(imputed_data)
+  
+}
+
+
+predict_counterfactuals<-function(bart_model, data_period, 
+                                  time_var = "period",
+                                  ci){
+  
+  #unique identifier for each entry time combination of treated units
+  idxXwalk <- data_period %>% 
+    dplyr::select(tidyselect::all_of(c("fac_id", time_var))) %>% 
+    dplyr::mutate(idx = 1:n())
+  
+  #predict outputs a num_treated*num_periods column df
+  #each row is a draw from the posterior.
+  y_hat_draws <- predict(bart_model, data_period, 
+                         group.by = data_period$fac_id) %>%
+    as.data.frame() %>%
+    dplyr::mutate(draw = 1:n()) %>%
+    tidyr::pivot_longer(names_to = "idx",
+                        values_to = "y",
+                        -draw) %>%
+    dplyr::mutate(idx = gsub(pattern = "V", replacement = "", x = idx, 
+                             fixed = T),
+                  idx = as.numeric(idx)) %>% 
+    dplyr::inner_join(idxXwalk, by = "idx")
+  
+  y_hat <- y_hat_draws %>%
+    dplyr::group_by(fac_id, !!as.name(time_var)) %>%
+    dplyr::summarise(point.pred = median(y),
+                     point.pred.lb = quantile(y, (1-ci)/2),
+                     point.pred.ub = quantile(y, 1-(1-ci)/2))
+  
+  data_period=data_period %>%
+    dplyr::inner_join(y_hat, by=c("fac_id", time_var)) 
+  
+  return(data_period)
+  
+}
 
 
 

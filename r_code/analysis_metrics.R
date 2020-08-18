@@ -6,7 +6,7 @@ pacman::p_load(dplyr)
 
 metric_gen_helper<-function(input_tib, t_var_inp, treat_t_inp,
                             pred_inp, cf_inp, outcome_inp,
-                            pct_flag_inp){
+                            pct_flag_inp, data_type=c("raw", "tot")){
   #Helper function to our metric computation procedures, handles individual
   #level computation
   
@@ -21,9 +21,12 @@ metric_gen_helper<-function(input_tib, t_var_inp, treat_t_inp,
   #output: tibble with the metrics by entry and time since treatment
   
   #Create tibble with metrics (MAE and MSE) for each entry-time combination
+  if(data_type=="raw"){
+    input_tib=input_tib %>%
+      dplyr::mutate(post_period_t = !!as.name(t_var_inp) - 
+                      !!as.name(treat_t_inp))
+  }
   avg_metric <- input_tib %>%
-    dplyr::mutate(post_period_t = !!as.name(t_var_inp) - 
-                    !!as.name(treat_t_inp)) %>%
     dplyr::filter(post_period_t >= 0) %>% 
     dplyr::mutate(indiv_t_error = dplyr::case_when(
       !pct_flag_inp~abs(!!as.name(pred_inp) - !!as.name(cf_inp)),

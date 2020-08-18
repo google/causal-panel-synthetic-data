@@ -94,22 +94,22 @@ compute_tot_se_jackknife <- function(estimated_series_df, time_var = "period", t
   #Jackknife the relevant statistic for both absolute and percentage terms
   jk_comp_abs<- switch (stat_in,
                         "mean" =  jk_comp_abs %>% 
-                          furrr::future_map(~ jackknife(., mean)),
+                          furrr::future_map(~ resample::jackknife(., mean)),
                         "median"= jk_comp_abs %>% 
-                          furrr::future_map(~ jackknife(., median)),
+                          furrr::future_map(~ resample::jackknife(., median)),
                         "aggregate"=jk_comp_abs %>% 
-                          furrr::future_map(~ jackknife(., sum))
+                          furrr::future_map(~ resample::jackknife(., sum))
   )
   jk_comp_pct<-effects_to_jk %>%
     furrr::future_map(~ .[["pct_eff"]])
   #Jackknife the relevant statistic for both absolute and percentage terms
   jk_comp_pct<- switch (stat_in,
                         "mean" =  jk_comp_pct %>% 
-                          furrr::future_map(~ jackknife(., mean)),
+                          furrr::future_map(~ resample::jackknife(., mean)),
                         "median"= jk_comp_pct %>% 
-                          furrr::future_map(~ jackknife(., median)),
+                          furrr::future_map(~ resample::jackknife(., median)),
                         "aggregate"=jk_comp_pct %>% 
-                          furrr::future_map(~ jackknife(., function(x) {
+                          furrr::future_map(~ resample::jackknife(., function(x) {
                             (sum(x[[outcome_var]]) / sum(x[[pred_var]])) - 1
                           }))
   )
@@ -192,22 +192,22 @@ compute_ci_bounds_bootstrap <- function(estimated_series_df, time_var = "period"
   #Jackknife the relevant statistic for both absolute and percentage terms
   boot_comp_abs<- switch (stat_in,
                         "mean" =  boot_comp_abs %>% 
-                          furrr::future_map(~ bootstrap(., mean, R = nboots)),
+                          furrr::future_map(~ resample::bootstrap(., mean, R = nboots)),
                         "median"= boot_comp_abs %>% 
-                          furrr::future_map(~ bootstrap(., median, R = nboots)),
+                          furrr::future_map(~ resample::bootstrap(., median, R = nboots)),
                         "aggregate"=boot_comp_abs %>% 
-                          furrr::future_map(~ bootstrap(., sum, R = nboots))
+                          furrr::future_map(~ resample::bootstrap(., sum, R = nboots))
   )
   boot_comp_pct<-effects_to_boot %>%
     furrr::future_map(~ .[["pct_eff"]])
   #Jackknife the relevant statistic for both absolute and percentage terms
   boot_comp_pct<- switch (stat_in,
                         "mean" =  boot_comp_pct %>% 
-                          furrr::future_map(~ bootstrap(., mean, R = nboots)),
+                          furrr::future_map(~ resample::bootstrap(., mean, R = nboots)),
                         "median"= boot_comp_pct %>% 
-                          furrr::future_map(~ bootstrap(., median, R = nboots)),
+                          furrr::future_map(~ resample::bootstrap(., median, R = nboots)),
                         "aggregate"=boot_comp_pct %>% 
-                          furrr::future_map(~ bootstrap(., function(x) {
+                          furrr::future_map(~ resample::bootstrap(., function(x) {
                             (sum(x[[outcome_var]]) / sum(x[[pred_var]])) - 1
                           }, R = nboots))
   )

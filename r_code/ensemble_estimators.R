@@ -1,5 +1,4 @@
-pacman::p_load(dplyr, ggplot2, quadprog)
-
+pacman::p_load(dplyr, ggplot2, quadprog, purrr, furrr, tidyr, glue, tibble)
 
 reduce_pred_list <- function(pred_list, time_var = "period", 
                                  id_var = "entry", treat_time_var = "Treatment_Period",
@@ -160,11 +159,15 @@ placebo_estimation <- function(method_name, placebo_data,...){
   if(method_name=="mc"){
     return(estimate_gsynth_series(placebo_data, estimator="mc",...))
   }
+  if(method_name=="scdid_uncon"){
+    return(estimate_scdid_series(placebo_data, constrained=F,...))
+  }
   estimator_call=paste("estimate",method_name,"series", sep="_")
   return(do.call(estimator_call, list(placebo_data,...)))
 }
 
-
+#TODO(alexdkellogg): Potential improvement - focus ensemble weights on k periods
+#    after treatment, rather than the full post-treat time period
 estimate_ensemble <- function(method_names, true_data, pred_list,
                               constrained = T, intercept_allowed = T,  
                               indiv_weights=F, time_var = "period", 
@@ -179,10 +182,19 @@ estimate_ensemble <- function(method_names, true_data, pred_list,
   unit_mapping=placebo_data %>% 
     dplyr::filter(!is.na(Treatment_Period)) %>%
     dplyr::distinct(entry, Treatment_Unit)
-  
   #Next, estimate the counterfactual series for each method
+  #due to a bug in future library, must call these by name to tell future
+  #this is a global object
+  estimate_bart_series
+  estimate_gfoo_series
+  estimate_gsynth_series
+  estimate_scdid_series
+  estimate_scm_series
+  
   estimates_list=furrr::future_map(.x=method_names, .f=placebo_estimation,
                         placebo_data = placebo_data)
+  # estimates_list=lapply(method_names, placebo_estimation,
+  #                       placebo_data = placebo_data)
   names(estimates_list)=method_names
   
   #Combine the list of estimates (one per method) into a single tibble

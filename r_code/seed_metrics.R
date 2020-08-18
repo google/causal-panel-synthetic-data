@@ -135,15 +135,24 @@ compute_tot_coverage <- function(tot_list, horizon=5) {
 
 
 
-
-compute_jackknife_metrics<-function(estimated_tib_list, time_var = "period", 
-                                    outcome_var = "response",
-                                    prediction_var = "point.pred",
-                                    counterfac_var = "counter_factual",
+#TODO(alexdkellogg): clean this up -- was written for c(outcome_var = "response",
+#    prediction_var = "point.pred",counterfac_var = "counter_factual"); hacked 
+#    to convert it to RMSE of ATT rather than Y_hat
+compute_jackknife_metrics<-function(estimated_tib_list, 
+                                    data_type=c("tot", "raw"),
+                                    time_var = "period", 
+                                    prediction_var = "observed_mean_abs_tot", 
+                                    counterfac_var = "mean_abs_cf_tot", 
+                                    outcome_var = "mean_abs_cf_tot",
                                     treat_period_var = "Treatment_Period",
                                     pct_eff_flag = F,
                                     alpha_ci=0.95,
                                     horizon=5){
+  # if (missing(data_type)) {
+  #   stop("Please input argument data_type as `raw` or `tot`.")
+  # } else{
+  #   data_type <- match.arg(data_type)
+  # }
   
   #horizon: if null, average over all t. Otherwise, compute grouped avg up to horizon
   #bind our data over each replicate sample
@@ -153,7 +162,7 @@ compute_jackknife_metrics<-function(estimated_tib_list, time_var = "period",
     metric_gen_helper(input_tib=estimated_tib, t_var_inp=time_var, 
                       treat_t_inp=treat_period_var,pred_inp=prediction_var,
                       cf_inp=counterfac_var, outcome_inp=outcome_var,
-                      pct_flag_inp=pct_eff_flag)
+                      pct_flag_inp=pct_eff_flag,data_type=data_type)
   #Split by time if a horizon is specified
   if(is.null(horizon)){
     effects_to_jk<-avg_metric_series %>%

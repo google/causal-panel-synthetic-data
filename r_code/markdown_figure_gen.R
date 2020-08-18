@@ -115,8 +115,9 @@ markdown_estimation_output<-function(tib_to_gt_data, datalist, plot_indiv=F,
   
   
   random_data=sample(1:n_seeds,1)
+  plot_vec=setdiff(method_vec, "gsynth_debias")
   if(plot_indiv){
-    plot_list=lapply(method_vec, indiv_cf_plotter,rand_int=random_data, num_ex=2)
+    plot_list=lapply(plot_vec, indiv_cf_plotter,rand_int=random_data, num_ex=2)
     # browser()
     # args.list <- c(lapply(method_vec, indiv_cf_plotter,
     #                       rand_int=random_data, num_ex=2) ,
