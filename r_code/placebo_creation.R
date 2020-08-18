@@ -4,21 +4,19 @@ pacman::p_load(dplyr, tidyr, stats, tibble)
 # assigning treatment based on matching.
 ###########################################
 
-
+#' Helper function for .MatchingWithoutReplacement.
+#' Measures the euclidean distance between ts_tomatch
+#' and each of the rows in the tibble ts_rest.
+#' 
+#' @param ts_tomatch Treated time series tibble, rows are ID and columns Time.
+#' @param ts_rest Donor time series tibble, rows identify ID and columns Time.
+#' 
+#' @return Vector of indices each indicating the row in ts_rest that is best 
+#'      matched (min L2 norm distance) to the row in ts_tomatch.
+#'      
+#' @noRd
 .NearestTSEuclidean <- function(ts_tomatch, ts_rest) {
-  #' Helper function for .MatchingWithoutReplacement.
-  #' Measures the euclidean distance between ts_tomatch
-  #' and each of the rows in the tibble ts_rest.
-  #' 
-  #' @param ts_tomatch Treated time series tibble, rows are ID and columns Time.
-  #' @param ts_rest Donor time series tibble, rows identify ID and columns Time.
-  #' 
-  #' @return Vector of indices each indicating the row in ts_rest that is best 
-  #'      matched (min L2 norm distance) to the row in ts_tomatch.
-  #'      
-  #' @noRd
-  
-  return(apply(ts_tomatch, 1, function(ts_tomatch) {
+  nearest_ts <- apply(ts_tomatch, 1, function(ts_tomatch) {
     which.min(
       apply(
         ts_rest, 1, function(ts_rest, ts_tomatch) {
@@ -27,26 +25,25 @@ pacman::p_load(dplyr, tidyr, stats, tibble)
         ts_tomatch
       )
     )
-  }))
+  })
+  return(nearest_ts)
 }
 
-
+#' Finds the nearest match for each treated unit (treated_block)
+#' among the donor pool (control_block) without replacement by calling helper
+#' .NearestTSEuclidean.
+#'
+#' @param treated_block Treated time series tibble, dimension ID by Time.
+#' @param control_block Donor time series tibble, dimension ID by Time.
+#' 
+#' @return A tibble containing a column for the placebo-treated unit ID,
+#'     the treated unit it was the nearest match to, and the treatment time of 
+#'     the true treated unit.
+#' @noRd
 .MatchingWithoutReplacement <- function(treated_block,
                                          control_block,
                                          id_var,
                                          treat_period) {
-  #' Finds the nearest match for each treated unit (treated_block)
-  #' among the donor pool (control_block) without replacement by calling helper
-  #' .NearestTSEuclidean.
-  #'
-  #' @param treated_block Treated time series tibble, dimension ID by Time.
-  #' @param control_block Donor time series tibble, dimension ID by Time.
-  #' 
-  #' @return A tibble containing a column for the placebo-treated unit ID,
-  #'     the treated unit it was the nearest match to, and the treatment time of 
-  #'     the true treated unit.
-  #' @noRd
-  
   # Initialize an empty vector for the donor IDs that match.
   already_matched <- c()
   # Randomize the order of matching for this greedy approach.
@@ -76,13 +73,30 @@ pacman::p_load(dplyr, tidyr, stats, tibble)
   # Store the resulting vectors in a tibble for output.
   df_toreturn <- tibble::tibble(temp_id = already_matched, 
                         temp_treattime = placebo_treat_period, 
-                        Treatment_Unit = treatment_unit)
+                        Treatment_Unit = treatment_unit) %>%
+    dplyr::rename(!!as.name(id_var) := temp_id,
+                  !!as.name(treat_period) := temp_treattime)
   
-  return(df_toreturn %>% 
-           dplyr::rename(!!as.name(id_var) := temp_id,
-                  !!as.name(treat_period) := temp_treattime))
+  return(df_toreturn)
 }
-
+#' Generates a placebo tibble, using matching methods to select
+#' placebo-treated entries as those most similar to truly-treated.
+#'
+#' @param data_full Long-form tibble with both treated and control entries.
+#'    rows represent period-entry combinations  (e.g. N (total num of entry) 
+#'    rows for period t). Each row should have a treatment indicator 
+#'    (treat_indicator),  a period number (time_var), an individual ID 
+#'    (id_var), and an outcome (outcome_var) for associated with that 
+#'    period-ID combination.
+#' @param id_var Column name of numeric, unique ID representing the entry.
+#' @param time_var Column name of numeric period number (the time period),
+#'    in increasing order (e.g. 0 is the first time, 120 is the last).
+#' @param treat_indicator Column name of binary (0, 1) indicator for whether 
+#'     the unit in that time period was treated. Should never decrease.
+#'     
+#' @return A tibble of the same format as data_full, 
+#'    entirely consisting of donor units, some of which are placebo-treated 
+#'    (based on matching).
 #TODO(alexdkellogg):  Revisit whether pivoting will cause issues in the 
 #    presence of several time varying covariates.
 #TODO(alexdkellogg): Account for multiple treatments, treatment end dates.
@@ -91,25 +105,6 @@ CreatePlaceboData <- function(data_full, id_var = "entry",
                               treat_indicator = "treatperiod_0",
                               outcome_var = "target", 
                               counterfac_var = "counter_factual") {
-  #' Generates a placebo tibble, using matching methods to select
-  #' placebo-treated entries as those most similar to truly-treated.
-  #'
-  #' @param data_full Long-form tibble with both treated and control entries.
-  #'    rows represent period-entry combinations  (e.g. N (total num of entry) 
-  #'    rows for period t). Each row should have a treatment indicator 
-  #'    (treat_indicator),  a period number (time_var), an individual ID 
-  #'    (id_var), and an outcome (outcome_var) for associated with that 
-  #'    period-ID combination.
-  #' @param id_var Column name of numeric, unique ID representing the entry.
-  #' @param time_var Column name of numeric period number (the time period),
-  #'    in increasing order (e.g. 0 is the first time, 120 is the last).
-  #' @param treat_indicator Column name of binary (0, 1) indicator for whether 
-  #'     the unit in that time period was treated. Should never decrease.
-  #'     
-  #' @return A tibble of the same format as data_full, 
-  #'    entirely consisting of donor units, some of which are placebo-treated 
-  #'    (based on matching).
-  
   # Split the dataset based on whether the unit is ever treated.
   tr_entries <- data_full %>%
     dplyr::filter(!!as.name(treat_indicator) > 0) %>%
