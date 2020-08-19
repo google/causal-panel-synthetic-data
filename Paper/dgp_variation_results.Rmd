@@ -28,7 +28,7 @@ source(here("r_code/markdown_figure_gen.R"))
 
 dataset_names=setdiff(list.files(here::here("Data", "Variations")), "Old")
 methods_used=c("gsynth","gsynth_debiased" ,"scdid", "scdid_uncon", "scm", "gfoo",
-               "mc", "causalimpact", "bart")
+               "mc", "causalimpact", "bart", "ensemble")
 for_gt=lapply(dataset_names, gt_set_up, method_vec=methods_used)
 
 markdown_estimation_output(for_gt[[1]], dataset_names[[1]],
@@ -48,24 +48,24 @@ markdown_estimation_output(for_gt[[7]], dataset_names[[7]],
                            method_vec = methods_used)
 markdown_estimation_output(for_gt[[8]], dataset_names[[8]], 
                            method_vec = methods_used)
-markdown_estimation_output(for_gt[[9]], dataset_names[[9]], 
-                           method_vec = methods_used)
-markdown_estimation_output(for_gt[[10]], dataset_names[[10]], 
-                           method_vec = methods_used)
-markdown_estimation_output(for_gt[[11]], dataset_names[[11]], 
-                           method_vec = methods_used)
-markdown_estimation_output(for_gt[[12]], dataset_names[[12]], 
-                           method_vec = methods_used)
-markdown_estimation_output(for_gt[[13]], dataset_names[[13]], 
-                           method_vec = methods_used)
-markdown_estimation_output(for_gt[[14]], dataset_names[[14]], 
-                           method_vec = methods_used)
-markdown_estimation_output(for_gt[[15]], dataset_names[[15]], 
-                           method_vec = methods_used)
-markdown_estimation_output(for_gt[[16]], dataset_names[[16]], 
-                           method_vec = methods_used)
-markdown_estimation_output(for_gt[[17]], dataset_names[[17]], 
-                           method_vec = methods_used)
+# markdown_estimation_output(for_gt[[9]], dataset_names[[9]], 
+#                            method_vec = methods_used)
+# markdown_estimation_output(for_gt[[10]], dataset_names[[10]], 
+#                            method_vec = methods_used)
+# markdown_estimation_output(for_gt[[11]], dataset_names[[11]], 
+#                            method_vec = methods_used)
+# markdown_estimation_output(for_gt[[12]], dataset_names[[12]], 
+#                            method_vec = methods_used)
+# markdown_estimation_output(for_gt[[13]], dataset_names[[13]], 
+#                            method_vec = methods_used)
+# markdown_estimation_output(for_gt[[14]], dataset_names[[14]], 
+#                            method_vec = methods_used)
+# markdown_estimation_output(for_gt[[15]], dataset_names[[15]], 
+#                            method_vec = methods_used)
+# markdown_estimation_output(for_gt[[16]], dataset_names[[16]], 
+#                            method_vec = methods_used)
+# markdown_estimation_output(for_gt[[17]], dataset_names[[17]], 
+#                            method_vec = methods_used)
 
 
 #for_gt[[2]]=for_gt[[1]]

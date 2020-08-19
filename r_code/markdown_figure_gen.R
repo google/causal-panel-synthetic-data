@@ -64,7 +64,8 @@ gt_set_up <- function(dataset_name, method_vec){
     lapply(method_vec, metric_tibble_helper, metric_name="coverage") %>%
     dplyr::bind_rows() %>%
     dplyr::mutate(metric="coverage", metric_value=coverage_abs)%>%
-    dplyr::select(post_period_t,metric, method, metric_value)
+    dplyr::select(post_period_t,metric, method, metric_value) %>%
+    filter(post_period_t>0, post_period_t<6)
   
   #set up the rmse tibble
   rmse_tib=
@@ -100,7 +101,7 @@ markdown_estimation_output<-function(tib_to_gt_data, datalist, plot_indiv=F,
 
   args.list <- c(lapply(method_vec, function(x){
     eval(as.name(paste(x,"bias", "plot", sep="_")))
-  }) ,list(nrow=4,ncol=2))
+  }) ,list(nrow=5,ncol=2))
   do.call(gridExtra::grid.arrange,args.list )
 
   
@@ -115,7 +116,7 @@ markdown_estimation_output<-function(tib_to_gt_data, datalist, plot_indiv=F,
   
   
   random_data=sample(1:n_seeds,1)
-  plot_vec=setdiff(method_vec, "gsynth_debias")
+  plot_vec=setdiff(method_vec, "gsynth_debiased")
   if(plot_indiv){
     plot_list=lapply(plot_vec, indiv_cf_plotter,rand_int=random_data, num_ex=2)
     # browser()

@@ -4,6 +4,194 @@ pacman::p_load(dplyr, furrr, tidyr, stats,
 
 library(dbarts)
 
+#Goal: rewrite factor creations
+#if you want weekly, need min 4 factors; daily minimum 5 factos
+#factor 4 becomes a weekly effect, factor 5 becomes a daily effect
+#create a grid that is daily by default. append to factor_tib as normal
+#Use the structure in factor tib to build a helper?
+#For factor 4, regardless of how the data is frequent, grab the distinct week_nums
+#and assign 13 shocks (the rest are 0).
+#for factor 5, grab the distinct day nums and assign 20 shocks at random locations
+#note that if the data is monthly, the week num and day nums will have the same
+#number of distinct values -- that's not a problem.
+#For all factors>5, grab the distinct day num (most granular) and assign 22
+# more shocks shocks
+
+.BaseFactorHelper <- function(date_tib, freq_inp, shock_name, factor_name,
+                          ar_model){
+  lim=switch (shock_name,
+    "day_num" = 0.1,
+    "week_num" = 0.2,
+    1
+  )
+  f_shocks=paste(shock_name[1], "shock", sep="_")
+  shock_map= date_tib %>% 
+    dplyr::select(tidyselect::all_of(shock_name)) %>%
+    dplyr::distinct() %>%
+    dplyr::mutate(!!as.name(f_shocks):=stats::runif(dplyr::n(), -lim, lim ))
+  
+  tib_out= date_tib %>%
+    dplyr::inner_join(shock_map, by=shock_name) %>%
+    dplyr::group_by(!!as.name(shock_name)) %>% 
+    dplyr::mutate(
+      !!as.name(factor_name) := stats::arima.sim(
+        model = ar_model, n = dplyr::n(),
+        innov = !!as.name(f_shocks) + stats::rnorm(dplyr::n(),
+                                       sd = 0.1
+        ),
+        n.start = 500 ) ) %>%  dplyr::ungroup() %>%
+    dplyr::select(tidyselect::all_of(c(factor_name, f_shocks)))
+  
+  return(tib_out)
+}
+
+
+.ExtraFactorHelper <- function(date_tib,factor_name, ar_model){
+ 
+  date_tib=date_tib %>%
+    dplyr::group_by(year_num) %>%
+    dplyr::mutate(extra_t=dplyr::row_number()) %>%
+    dplyr::ungroup() 
+  unique_dates=date_tib %>%
+    dplyr::select(time, extra_t) %>% 
+    dplyr::distinct(extra_t) 
+  
+  effective_t=max(unique_dates)
+  num_shocks <- sample(1:min(25,effective_t), 1)
+  
+  #TODO(alexdkellogg): which of these approaches is right??
+  #one: only have a shock on the particular randomly selected date
+  # shock_map=unique_dates %>%
+  #   sample_n(num_shocks) %>% 
+  #   dplyr::mutate(e_shock=stats::runif(dplyr::n(), -1, 1 )) %>%
+  #   dplyr::full_join(unique_dates, by="extra_t") %>%
+  #   dplyr::mutate(e_shock=tidyr::replace_na(e_shock,0)) %>%
+  #   dplyr::arrange(extra_t)
+  
+  #two: shocks propogate until they switch
+  # If it's two, then just change the join and uncomment.
+  shock_locs <- c(0, sort(sample(1:52, size = num_shocks, replace = F)), 52)
+  extra_shocks <- stats::runif(n = num_shocks + 1, min = -1, max = 1)
+  shock_seq <- rep(rep(extra_shocks, diff(shock_locs)),
+                   length.out = max(date_tib[["time"]]))
+
+
+
+  # Map the randomly determined shocks into the dates
+  shock_map <- tibble::tibble(
+    time = seq_len(max(date_tib[["time"]])),
+    e_shock = shock_seq
+  )
+  
+  tib_out= date_tib %>%
+    dplyr::inner_join(shock_map, by="time") %>%
+    dplyr::group_by(e_shock) %>% 
+    dplyr::mutate(
+      !!as.name(factor_name) := stats::arima.sim(
+        model = ar_model, n = dplyr::n(),
+        innov = e_shock + stats::rnorm(dplyr::n(),
+                                                   sd = 0.1
+        ),
+        n.start = 500 ) ) %>%  
+    dplyr::ungroup() %>%
+    dplyr::select(tidyselect::all_of(c(factor_name, "e_shock")))
+  
+  return(tib_out)
+}
+
+generate_factors <- function(num_factors_inp,
+                             num_periods_inp, num_entry_inp,
+                             date_start_inp, date_end_inp, freq_inp) {
+  # ar model description -- AR 1 with auto correlation and sd inputs
+  ar_model <- list(order = c(1, 0, 0), ar = 0.2)
+ 
+  # combine the zero matrix of factors with date indicators
+  factor_tib <- generate_time_grid(
+    date_start_inp = date_start_inp,
+    num_periods_inp = num_periods_inp,
+    freq_inp = freq_inp,
+    num_entry_inp = num_entry_inp
+  ) %>%
+    dplyr::mutate(factor1 = time / dplyr::n() +
+                    stats::rnorm(dplyr::n(), mean = 0, sd = 0.1))
+  
+  #Month and Quarter Factors
+  base_vec=switch (freq_inp,
+    "daily" = c("quarter_num", "month_num", "week_num","day_num"),
+    "weekly" = c("quarter_num", "month_num","week_num"),
+    "monthly" = c("quarter_num", "month_num")
+  )
+  
+  shocks_tib=purrr::map2_dfc(.x=base_vec,
+                          .y=c(glue::glue("factor{2:(length(base_vec)+1)}")),
+                          .f=~.BaseFactorHelper(date_tib=factor_tib,
+                                            freq_inp=freq_inp, shock_name=.x, 
+                                            factor_name=.y, ar_model=ar_model))
+  
+  factor_tib <- factor_tib %>% dplyr::bind_cols(shocks_tib)
+  
+  
+  if (num_factors_inp > length(base_vec)+1) {
+    # Add additional factors beyond the number implied by freq_inp.
+    extra_factors_names <- 
+      c(glue::glue("factor{(length(base_vec)+2):num_factors_inp}"))
+    
+    extra_factor_tib <-
+      purrr::map_dfc(.x=extra_factors_names,
+                      .f=~.ExtraFactorHelper(date_tib=factor_tib,
+                                            factor_name=.x, ar_model=ar_model))
+    
+    factor_tib <- factor_tib %>%
+      dplyr::bind_cols(extra_factor_tib)
+  }
+  browser()
+  factor_tib <- factor_tib %>% dplyr::select(-tidyselect::contains("shock"))
+  return(factor_tib)
+}
+
+
+
+# TODO(alexdkellogg): extra factors are essentially weekly noise
+#    perhaps make the 4th weekly and the 5th daily (by selecting more number
+#    as well as their location among 1-365)
+#    Issue is that if this is monthly, then shocks wont be repeated by day...
+add_extra_factors <- function(factor_tib, col_in, num_factors_inp,
+                              num_periods_inp,
+                              ar_model_inp) {
+  browser()
+  # compute the number shocks and their respective locations
+  # Shock number is randomly determined between 1 and 13
+  # Shock location is randomly determined as one of the weeks
+  num_shocks <- sample(1:13, 1)
+  shock_locs <- c(0, sort(sample(1:52, size = num_shocks, replace = F)), 52)
+  extra_shocks <- stats::runif(n = num_shocks + 1, min = -1, max = 1)
+  shock_seq <- rep(rep(extra_shocks, diff(shock_locs)), 
+                   length.out = num_periods_inp)
+  
+  
+  
+  # Map the randomly determined shocks into the dates
+  shockXwalk <- tibble::tibble(
+    time = seq_len(num_periods_inp),
+    e_shocks = shock_seq
+  )
+  factor_tib <- factor_tib %>%
+    dplyr::left_join(shockXwalk, by = "time") %>%
+    dplyr::mutate(
+      !!as.name(col_in) :=
+        stats::arima.sim(
+          model = ar_model_inp, n = dplyr::n(),
+          innov = e_shocks + stats::rnorm(dplyr::n(),
+                                          sd = 0.1
+          ),
+          n.start = 500
+        )
+    )
+  factor_tib <- factor_tib %>% dplyr::select(tidyselect::all_of(col_in))
+  return(factor_tib)
+}
+
+
 
 
 

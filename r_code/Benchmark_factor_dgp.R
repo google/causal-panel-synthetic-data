@@ -327,7 +327,8 @@ for(i in seq_len(length(list_of_dgps))){
     ggplot2::labs(y="ATT Bias", title="Gsynth Debiased Bias")
   gsynth_debiased_overall_metrics=compute_jackknife_metrics(gsynth_debiased_tot)
   gsynth_debiased_tot_var=compute_tot_variance(gsynth_debiased_tot)
-  gsynth_debiased_coverage=compute_tot_coverage(gsynth_debiased_tot)
+  gsynth_debiased_coverage=compute_tot_coverage(gsynth_debiased_tot) %>%
+    dplyr::filter(post_period_t>=0)
   toc()
 
   tic("Estimating SCDID")
