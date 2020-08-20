@@ -40,6 +40,8 @@ pacman::p_load(dplyr, tidyr, stats, tibble)
 #'     the treated unit it was the nearest match to, and the treatment time of 
 #'     the true treated unit.
 #' @noRd
+# TODO(alexdkellogg): Improve the TS matching -- try non L2 matching, non-greedy
+#    approaches and see if they improve performance.
 .MatchingWithoutReplacement <- function(treated_block,
                                         control_block,
                                         id_var,
