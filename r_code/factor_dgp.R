@@ -151,8 +151,8 @@ SyntheticDGP <- function(num_entries = 2000,
 
   rescale_y=dplyr::case_when(
     freq=="monthly"~log(rescale_y_mean),
-    freq=="weekly"~log(rescale_y_mean)/4,
-    freq=="daily"~log(rescale_y_mean)/30)
+    freq=="weekly"~log(rescale_y_mean/4),
+    freq=="daily"~log(rescale_y_mean/30))
   # Generate the counterfactual outcomes for each unit time combo.
   synth_data_full <- .GenerateCounterfactual(synth_data_full,
     num_periods_inp = num_periods,
@@ -234,7 +234,7 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 #'
 #' @return Individual specific counterfactual outcome series.
 .ComputeOutcomeProcess <- function(data_inp, num_periods_inp) {
-  # Create a list of AR models, with unit specifc noise and autocorrelation.
+  # Create a list of AR models, with unit specific noise and autocorrelation.
   ar_param_inp <- data_inp %>%
     dplyr::select(entry, autocorr) %>%
     dplyr::distinct(entry, .keep_all = T) %>%
@@ -270,6 +270,7 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 #' @param freq_inp String indicating time unit, one of "daily", "weekly", "monthly".
 #'
 #' @return Long form tibble with counterfactual (rescaled) outcome appended.
+# TODO(alexdkellogg): Scaling should probably become a function of rho.
 .GenerateCounterfactual <- function(data_inp, num_periods_inp, rescale_y,
                                     freq_inp) {
   # Compute each of the component pieces for generating counterfactual y.
@@ -309,9 +310,10 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
     )
   # Adjust the tightness of the rescaled distribution by frequency.
   freq_scaler <- dplyr::case_when(
-    freq_inp=="monthly"~0.5,
-    freq_inp=="weekly"~ 2,
-    freq_inp=="daily"~15)
+    freq_inp=="monthly"~0.7,
+    freq_inp=="weekly"~ 0.9,
+    freq_inp=="daily"~1.1)
+  
   # Rescale the outcome series to avoid massive outliers.
   outcome_series_rescaled <- outcome_series %>%
     dplyr::mutate(
@@ -438,11 +440,12 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 #'    "month_num", "week_num", "day_num".
 #' @param factor_name String indicating the desired factor name.
 #' @param ar_model AR model list object for AR(1) process with rho=0.2.
+#' @param ar_sd AR(1) parameter noise term for the factors.
 #'
 #' @return Tibble with the shocks by shock_name, as well as the factors.
 # TODO(alexdkellogg): unselect the shocks -- they are just for debugging.
 .BaseFactorHelper <- function(date_tib, freq_inp, shock_name, factor_name,
-                              ar_model){
+                              ar_model, ar_sd){
   # Generate the bounds for the random uniform noise.
   lim=switch (shock_name,
               "day_num" = 0.1,
@@ -463,10 +466,10 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
       !!as.name(factor_name) := stats::arima.sim(
         model = ar_model, n = dplyr::n(),
         innov = !!as.name(f_shocks) + stats::rnorm(dplyr::n(),
-                                                   sd = 0.1
+                                                   sd = ar_sd
         ),
         n.start = 500 ) ) %>%  dplyr::ungroup() %>%
-    dplyr::select(tidyselect::all_of(c(factor_name, f_shocks)))
+    dplyr::select(tidyselect::all_of(factor_name))
   
   return(tib_out)
 }
@@ -477,10 +480,10 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 #' @param date_tib Grid of date time, spanning the desired number of periods.
 #' @param factor_name String indicating the desired factor name.
 #' @param ar_model AR model list object for AR(1) process with rho=0.2.
-#'
+#' @param ar_sd AR(1) parameter noise term for the factors.
+#' 
 #' @return Tibble with the shocks by shock_name, as well as the factors.
-# TODO(alexdkellogg): unselect the shocks -- they are just for debugging.
-.ExtraFactorHelper <- function(date_tib,factor_name, ar_model){
+.ExtraFactorHelper <- function(date_tib,factor_name, ar_model, ar_sd){
   # Generate a set of unique dates which will be mapped to a shock.
   date_tib=date_tib %>%
     dplyr::group_by(year_num) %>%
@@ -491,44 +494,28 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
     dplyr::distinct(extra_t) 
   
   effective_t=max(unique_dates)
-  num_shocks <- sample(1:min(25,effective_t), 1)-1
+  num_shocks <- sample(3:min(25,effective_t), 1)-1
+
+  shock_map=unique_dates %>%
+    sample_n(num_shocks) %>%
+    dplyr::mutate(e_shock=stats::runif(dplyr::n(), -1, 1 )) %>%
+    dplyr::full_join(unique_dates, by="extra_t") %>%
+    dplyr::mutate(e_shock=tidyr::replace_na(e_shock,0)) %>%
+    dplyr::arrange(extra_t)
   
-  # TODO(alexdkellogg): which of these approaches is right?
-  # One: only have a shock on the particular randomly selected date.
-  # shock_map=unique_dates %>%
-  #   sample_n(num_shocks) %>% 
-  #   dplyr::mutate(e_shock=stats::runif(dplyr::n(), -1, 1 )) %>%
-  #   dplyr::full_join(unique_dates, by="extra_t") %>%
-  #   dplyr::mutate(e_shock=tidyr::replace_na(e_shock,0)) %>%
-  #   dplyr::arrange(extra_t)
-  
-  # Two: shocks propogate until they switch.
-  # If it's two, then just change the join and uncomment.
-  shock_locs <- c(0, sort(sample(1:52, size = num_shocks, replace = F)), 52)
-  extra_shocks <- stats::runif(n = num_shocks + 1, min = -1, max = 1)
-  shock_seq <- rep(rep(extra_shocks, diff(shock_locs)),
-                   length.out = max(date_tib[["time"]]))
-  
-  
-  
-  # Map the randomly determined shocks into the dates.
-  shock_map <- tibble::tibble(
-    time = seq_len(max(date_tib[["time"]])),
-    e_shock = shock_seq
-  )
   # Map the shocks into factors, and structure the output.
   tib_out= date_tib %>%
-    dplyr::inner_join(shock_map, by="time") %>%
+    dplyr::inner_join(shock_map, by="extra_t") %>%
     dplyr::group_by(e_shock) %>% 
     dplyr::mutate(
       !!as.name(factor_name) := stats::arima.sim(
         model = ar_model, n = dplyr::n(),
         innov = e_shock + stats::rnorm(dplyr::n(),
-                                       sd = 0.1
+                                       sd = ar_sd
         ),
         n.start = 500 ) ) %>%  
     dplyr::ungroup() %>%
-    dplyr::select(tidyselect::all_of(c(factor_name, "e_shock")))
+    dplyr::select(tidyselect::all_of(factor_name))
   
   return(tib_out)
 }
@@ -540,11 +527,16 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 #'     at least 3,4,and 5 respectively.
 #' @param num_periods_inp Number of time periods to be generated.
 #' @param freq_inp String indicating time unit: "daily", "weekly", "monthly".
-#'
+#' @param ar_rho AR(1) parameter for the factors, fixed to rho=0.2.
+#' @param ar_sd AR(1) parameter noise term for the factors, 0.75
+#' 
 #' @return Time only tibble with factors appended.
-.GenerateFactors <- function(num_factors_inp, num_periods_inp, freq_inp) {
+#TODO(alexdkellogg): for some reason, get very different results when I 
+#    specify the sd=sqrt(ar_sd) into the ar_model -- should be same though! 
+.GenerateFactors <- function(num_factors_inp, num_periods_inp, freq_inp,
+                             ar_rho=0.2, ar_sd=0.75) {
   # Ar model description -- AR 1 with auto correlation and sd inputs.
-  ar_model <- list(order = c(1, 0, 0), ar = 0.2)
+  ar_model <- list(order = c(1, 0, 0), ar = ar_rho)
   
   # Create the date indicator grid along with the first factor (trend).
   factor_tib <- .GenerateTimeGrid(
@@ -565,7 +557,8 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
                              .y=c(glue::glue("factor{2:(length(base_vec)+1)}")),
                              .f=~.BaseFactorHelper(date_tib=factor_tib,
                                                    freq_inp=freq_inp, shock_name=.x, 
-                                                   factor_name=.y, ar_model=ar_model))
+                                                   factor_name=.y, ar_model=ar_model,
+                                                   ar_sd=ar_sd))
   
   factor_tib <- factor_tib %>% dplyr::bind_cols(shocks_tib)
   
@@ -578,7 +571,8 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
     extra_factor_tib <-
       purrr::map_dfc(.x=extra_factors_names,
                      .f=~.ExtraFactorHelper(date_tib=factor_tib,
-                                            factor_name=.x, ar_model=ar_model))
+                                            factor_name=.x, ar_model=ar_model,
+                                            ar_sd=ar_sd))
     
     factor_tib <- factor_tib %>%
       dplyr::bind_cols(extra_factor_tib)
@@ -966,59 +960,60 @@ FormatForEst <- function(data_ouput) {
 # TODO(alexdkellogg): Due to rescaling, there is very little variation in the
 #    shape of daily data when aggregated. Think about whether this should be 
 #    updated. Same goes for weekly data -- both have intercept shifts though.
-AggregateDataByFreq <- function(disagg_data, to = "monthly", from = "daily",
-                                   id_var = "entry", time_var = "time") {
-  date_levels <- factor(c("daily", "weekly", "monthly", "yearly"), ordered = T, 
-                        levels = c("daily", "weekly", "monthly", "yearly"))
-  # If no aggregation is happening, break.
-  stopifnot(match.arg(to, date_levels) > match.arg(from, date_levels))
-
-  agg_ids <- c("day_num", "week_num", "month_num", "year_num")
-
-  # Identify the larger dates.
-  to_ind <- match(to, date_levels)
-  to_vars <- agg_ids[seq(to_ind, length(agg_ids))]
-
-  disagg_data <- disagg_data %>% dplyr::mutate(period = !!as.name(time_var))
-
-  # Create the aggregated tibble of outcomes.
-  new_date_name <- paste0(to, "_date_end", sep = "")
-  agg_data <- disagg_data %>%
-    dplyr::mutate(treatperiod_0 = (treated == 1) * (post_treat_t >= 0)) %>%
-    dplyr::group_by_at(c(id_var, to_vars)) %>%
-    summarise(
-      y0 = sum(y0), y1 = sum(y1), y = sum(y),
-      !!as.name(new_date_name) := max(date_t),
-      treatperiod_0 = max(treatperiod_0)
-    ) %>%
-    dplyr::ungroup()
-
-  agg_data <- agg_data %>%
-    dplyr::mutate(period = agg_data %>% 
-                    dplyr::group_by_at(to_vars) %>% 
-                    dplyr::select(tidyselect::all_of(to_vars)) %>% 
-                    dplyr::group_indices())
-  # Create the aggregated tibble with relevant covariates.
-  agg_data_covariates <- agg_data %>%
-    dplyr::inner_join(
-      disagg_data %>% dplyr::select(-c(
-        period, date_t, treatment_period,
-        post_treat_t, time,
-        setdiff(agg_ids, to_vars),
-        y0, y1, y
-      )) %>%
-        distinct_at(c("entry", to_vars), .keep_all = T),
-      by = c(id_var, to_vars)
-    ) %>%
-    dplyr::group_by(!!as.name(id_var)) %>%
-    dplyr::mutate(
-      Treatment_Period = case_when(
-        treated == 0 ~ NA_real_,
-        treated == 1 ~ (length(treatperiod_0) - sum(treatperiod_0) + 1)
-      ),
-      post_treat_t = period - Treatment_Period
-    ) %>%
-    dplyr::ungroup()
-
-  return(agg_data_covariates)
-}
+# TOTO(alexdkellogg): If output is logged, should exp then sum, then log again.
+# AggregateDataByFreq <- function(disagg_data, to = "monthly", from = "daily",
+#                                    id_var = "entry", time_var = "time") {
+#   date_levels <- factor(c("daily", "weekly", "monthly", "yearly"), ordered = T, 
+#                         levels = c("daily", "weekly", "monthly", "yearly"))
+#   # If no aggregation is happening, break.
+#   stopifnot(match.arg(to, date_levels) > match.arg(from, date_levels))
+# 
+#   agg_ids <- c("day_num", "week_num", "month_num", "year_num")
+# 
+#   # Identify the larger dates.
+#   to_ind <- match(to, date_levels)
+#   to_vars <- agg_ids[seq(to_ind, length(agg_ids))]
+# 
+#   disagg_data <- disagg_data %>% dplyr::mutate(period = !!as.name(time_var))
+# 
+#   # Create the aggregated tibble of outcomes.
+#   new_date_name <- paste0(to, "_date_end", sep = "")
+#   agg_data <- disagg_data %>%
+#     dplyr::mutate(treatperiod_0 = (treated == 1) * (post_treat_t >= 0)) %>%
+#     dplyr::group_by_at(c(id_var, to_vars)) %>%
+#     summarise(
+#       y0 = sum(y0), y1 = sum(y1), y = sum(y),
+#       !!as.name(new_date_name) := max(date_t),
+#       treatperiod_0 = max(treatperiod_0)
+#     ) %>%
+#     dplyr::ungroup()
+# 
+#   agg_data <- agg_data %>%
+#     dplyr::mutate(period = agg_data %>% 
+#                     dplyr::group_by_at(to_vars) %>% 
+#                     dplyr::select(tidyselect::all_of(to_vars)) %>% 
+#                     dplyr::group_indices())
+#   # Create the aggregated tibble with relevant covariates.
+#   agg_data_covariates <- agg_data %>%
+#     dplyr::inner_join(
+#       disagg_data %>% dplyr::select(-c(
+#         period, date_t, treatment_period,
+#         post_treat_t, time,
+#         setdiff(agg_ids, to_vars),
+#         y0, y1, y
+#       )) %>%
+#         distinct_at(c("entry", to_vars), .keep_all = T),
+#       by = c(id_var, to_vars)
+#     ) %>%
+#     dplyr::group_by(!!as.name(id_var)) %>%
+#     dplyr::mutate(
+#       Treatment_Period = case_when(
+#         treated == 0 ~ NA_real_,
+#         treated == 1 ~ (length(treatperiod_0) - sum(treatperiod_0) + 1)
+#       ),
+#       post_treat_t = period - Treatment_Period
+#     ) %>%
+#     dplyr::ungroup()
+# 
+#   return(agg_data_covariates)
+# }

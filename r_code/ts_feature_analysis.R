@@ -1,82 +1,120 @@
-pacman::p_load(dplyr, ggplot2, quadprog,tsfeatures,tibble, tidyr,rstatix)
+pacman::p_load(dplyr, ggplot2, janitor,tsfeatures,tibble, tidyr,rstatix)
 
 
 ############################################
-# Functions for preproccessing the data
+# Functions for visualizing and analyzing TS features.
 ###########################################
 
-tsfeature_pc_by_treatment_plot <- function(data_full,
+#' Visualize time series characteristics by treatment status.
+#'
+#' @param data_full Raw data in long form, one row per unit time combination.
+#' @param id_var String name of the unit identifier.
+#' @param outcome_var String name of the time series outcome identifier.
+#' @param treat_indicator String name of the treatment status indicator.
+#' @param type String name for the desired plot type. Currently support one of
+#'    "rug", "centroid", or "contour". 
+#' @param ... Additional arguments to be passed to tsfeatures function from the 
+#'    tsfeatures package. Examples include the name of the features and whether
+#'    to trim the outliers.
+#'
+#' @return A scatterplot of the first two principal components of the time 
+#'    series features, by treatment status.
+# TODO(alexdkellogg, oldham): Any suggested names? This stacks many capitals...
+TSFeaturesPCScatterplot <- function(data_full,
                                            id_var = "entry",
                                            outcome_var = "target",
                                            treat_indicator = "treatperiod_0",
-                                           ts_feature_names = NULL) {
-  # Generates a scatterplot with the First and Second Principal Components of a number of time series features on each axis,
-  # and the individual time series from data_full plotted in that space, colored by treatment status, with centroids.
-  
-  # Args
-  # data_full: long-form dataframe with both treated and control entries.
-  # id_var: column name of numeric, unique ID representing the entry (unit)
-  # time_var:column name of numeric period number indicating the time period, in increasing order (eg 0 is the first time, 120 is the last)
-  # treat_indicator:column name of binary (0, 1) indicator for whether id_var i in time_var t was treated. Once treated, must always be treated (for now)
-  # ts_feature_names: null for auto features from tsfeatures package (Fix: when formalizing package, pass args for which features you want)
-  
-  # Higher level description of data_full:
-  # rows of the df represent period-entry combinations (eg N (total num of entry) rows for period t).
-  # each row should have a treatment indicator (treat_indicator), a period number (time_var),
-  # an individual ID (id_var), and an outcome (outcome_var)
-  # for associated with that period-ID combination
-  
-  
-  # Output
-  # a ggplot object, with the time series by treated and control projected onto the first 2 PCs.
-  
-  # identify the treated entries, and assign them a dummy for Treated (in all periods)
+                                           type=c("rug", "centroid", "contour"),
+                                 ...) {
+  if (missing(type)) {
+    type <- "rug"
+  } else {
+    type <- match.arg(type)
+  }
+  # Identify treated observations.
   treated_entries <- (data_full %>%
                         dplyr::filter(!!as.name(treat_indicator) > 0) %>%
-                        dplyr::distinct(!!as.name(id_var)) %>% 
+                        dplyr::distinct(!!as.name(id_var)) %>%
                         dplyr::pull())
   data_full <- data_full %>%
     dplyr::mutate(Treated = as.numeric(!!as.name(id_var) %in% treated_entries))
   
+  # Compute the features for each TS, and the principal components of these.
+  feature_pc_df <- .ComputeTSFeatures(data_full,id_var = "entry",
+                                      outcome_var = "target", ...) %>%
+    stats::prcomp(scale = TRUE)
+  # Combine PC information with treatment status of the TS.
+  pc_entry_df <- feature_pc_df$x %>%
+    tibble::as_tibble() %>%
+    dplyr::bind_cols(
+      Treated =
+        factor(data_full %>%
+                 dplyr::distinct(!!as.name(id_var), .keep_all = T) %>%
+                 dplyr::pull(Treated))
+    )
+  # Create a base plot with the PCs by treatment.
+  feature_overlap_plot <- pc_entry_df %>%
+    ggplot2::ggplot(aes(x = PC1, y = PC2)) +
+    ggplot2::geom_point(aes(col = Treated)) +
+    ggplot2::ggtitle("First 2 PCs of TS Features by Treatment")+ 
+    ggplot2::theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          panel.background = element_blank(), 
+          axis.line = element_line(colour = "black"))
+  # Add to the plot based on the input type.
+  if(type=="rug"){
+    feature_overlap_plot=feature_overlap_plot+ 
+      ggplot2::geom_rug(aes(color=Treated)) 
+  } else if(type=="centroid"){
+    feature_overlap_plot <- .CentroidHelper(feature_overlap_plot, pc_entry_df)
+  } else if(type=="contour"){
+    feature_overlap_plot <- feature_overlap_plot +
+      ggplot2::geom_density_2d(aes(color = Treated,alpha=..level..), size=2)
+  }
+  # Change the color for slightly improved visibility.
+  feature_overlap_plot=feature_overlap_plot +
+    ggplot2::scale_color_manual(values=c("#E69F00", "#56B4E9"))
+  return(feature_overlap_plot)
+}
+
+
+#' Formats and estimates the TS features for each series.
+#'
+#' @inheritParams TSFeaturesPCScatterplot
+#'
+#' @return Data frame of the TS features per series, without constant columns.
+.ComputeTSFeatures <- function(data_full, id_var, outcome_var,...){
   
+  # Split the data into a list of individual time series.
   list_of_ts <- data_full %>%
     dplyr::select(!!as.name(id_var), !!as.name(outcome_var)) %>%
     split(.[[id_var]]) %>%
     furrr::future_map(~ .[[outcome_var]]) %>%
-    furrr::future_map(~ stats::ts(.))
+    furrr::future_map(~ ts(.))
+  # Compute the TS features for each series, remove constant columns.
+  df1_feat <- tsfeatures::tsfeatures(list_of_ts) %>%
+    janitor::remove_constant()
   
-  # Compute the df of Time Series features using tsfeatures package, and compute the Principal Components
-  # Fix: need a more systematic way to select out the constant vars that are problematic
-  df1_feat <- tsfeatures::tsfeatures(list_of_ts)
-  df1_feat_pc <- df1_feat %>%
-    dplyr::select(-c(frequency, nperiods, seasonal_period,
-                     e_acf10, x_acf10, diff2_acf10, diff1_acf10)) %>%
-    stats::prcomp(scale = TRUE)
-  
-  # first, explore overlap in a plot, colored by treatment status
-  df1_feat_pc$x %>%
-    tibble::as_tibble() %>%
-    dplyr::bind_cols(
-      Treated = factor(data_full %>%
-                         dplyr::distinct(!!as.name(id_var), .keep_all = T) %>%
-                         dplyr::pull(Treated))) %>%
-    ggplot2::ggplot(aes(x = PC1, y = PC2)) +
-    ggplot2::geom_point(aes(col = Treated))
-  
-  # Compute the mean of the centroid of PC1 and PC2 for each treatment group
-  pc_centroids <- df1_feat_pc$x %>%
-    tibble::as_tibble() %>%
-    dplyr::bind_cols(
-      Treated = factor(data_full %>%
-                         dplyr::distinct(!!as.name(id_var), .keep_all = T) %>%
-                         dplyr::pull(Treated))) %>%
+  return(df1_feat)
+}
+
+#' Add PC centroids to plot.
+#'
+#' @param base_plot Existing scatter plot from TSFeaturesPCScatterplot.
+#' @param pc_df Dataframe of PC of TS features by unit, with treatment status.
+#'
+#' @return Updated plot with included centroids of the PCs by treatment and 
+#'    customized title for the distance between the two.
+.CentroidHelper <- function(base_plot, pc_df){
+  # Compute the mean of the centroid of PC1 and PC2 for each treatment group.
+  pc_centroids <- pc_df %>%
     dplyr::group_by(Treated) %>%
     dplyr::summarise(
       mean_pc1 = mean(PC1),
       mean_pc2 = mean(PC2)
     )
   
-  # Compute the difference between the two centroids, to get a (naive) sense of overlap
+  # Compute the difference between the two centroids.
   centroid_dist <- pc_centroids %>%
     tidyr::pivot_wider(names_from = Treated, 
                        values_from = c(mean_pc1, mean_pc2)) %>%
@@ -85,80 +123,46 @@ tsfeature_pc_by_treatment_plot <- function(data_full,
         (mean_pc1_0 - mean_pc1_1)^2 + (mean_pc2_0 - mean_pc2_1)^2
     ) %>%
     dplyr::pull(dist)
-  
-  feature_overlap_plot <- df1_feat_pc$x %>%
-    tibble::as_tibble() %>%
-    dplyr::bind_cols(
-      Treated = factor(data_full %>%
-                         dplyr::distinct(entry, .keep_all = T) %>%
-                         dplyr::pull(Treated))) %>%
-    ggplot2::ggplot(aes(x = PC1, y = PC2)) +
-    ggplot2::geom_point(aes(col = Treated)) +
+  # Add centroids to the plot and add relevant subtitle.
+  base_plot=base_plot  +
     ggplot2::geom_point(aes(x = mean_pc1, y = mean_pc2, col = Treated),
-               data = pc_centroids, size = 12, shape = 18 ) +
-    ggplot2::ggtitle("Scatter Plot of First 2 PC by Treatment",
-            subtitle = paste(
-              "Centroids have L2 dist:",
-              round(centroid_dist, 4)
-            )
-    )
-  
-  return(feature_overlap_plot)
+                        data = pc_centroids, size = 12, shape = 18 ) +
+    ggplot2::labs(subtitle = paste(
+      "Centroids have L2 dist:",
+      round(centroid_dist, 4)))
+  return(base_plot)
 }
 
-
-tsfeature_by_treat_df <- function(data_full,
+#' Test whether TS features are significantly different by treatment status.
+#'
+#' @inheritParams TSFeaturesPCScatterplot
+#'
+#' @return A tibble displaying the results of hypothesis tests for differences
+#'    in ts features by treatment status.
+TSFeatureTest <- function(data_full,
                                   id_var = "entry",
                                   outcome_var = "target",
                                   treat_indicator = "treatperiod_0",
-                                  ts_feature_names = NULL) {
-  # Generates a table of the mean of time series features by treatment status
-  
-  # Args
-  # data_full: long-form dataframe with both treated and control entries.
-  # id_var: column name of numeric, unique ID representing the entry (unit)
-  # time_var:column name of numeric period number indicating the time period, in increasing order (eg 0 is the first time, 120 is the last)
-  # treat_indicator:column name of binary (0, 1) indicator for whether id_var i in time_var t was treated. Once treated, must always be treated (for now)
-  # ts_feature_names: null for auto features from tsfeatures package (Fix: when formalizing package, pass args for which features you want)
-  
-  # Higher level description of data_full:
-  # rows of the df represent period-entry combinations (eg N (total num of entry) rows for period t).
-  # each row should have a treatment indicator (treat_indicator), a period number (time_var),
-  # an individual ID (id_var), and an outcome (outcome_var)
-  # for associated with that period-ID combination
-  
-  
-  # Output
-  # a summary statistics table indicating which features are different by treatment status
-  
-  # identify the treated entries, and assign them a dummy for Treated (in all periods)
+                                  ...){
+  # Identify the treated units.
   treated_entries <- (data_full %>%
                         dplyr::filter(!!as.name(treat_indicator) > 0) %>%
                         dplyr::distinct(!!as.name(id_var)) %>%
                         dplyr::pull())
   data_full <- data_full %>%
-    dplyr::mutate( Treated = as.numeric(!!as.name(id_var) %in% treated_entries))
-  
-  
-  list_of_ts <- data_full %>%
-    dplyr::select(!!as.name(id_var), !!as.name(outcome_var)) %>%
-    split(.[[id_var]]) %>%
-    furrr::future_map(~ .[[outcome_var]]) %>%
-    furrr::future_map(~ ts(.))
-  # Compute the df of Time Series features using tsfeatures package, and t.test by group
-  # Fix: need a more systematic way to select out the constant vars that are problematic
-  # or try catch those and move on to the rest?
-  # Also, clean up the output
-  df1_feat <- tsfeatures::tsfeatures(list_of_ts) %>%
+    dplyr::mutate(Treated = as.numeric(!!as.name(id_var) %in% treated_entries))
+  # Add treatment status to the tibble of TS features per entry.
+  feature_treat_df <- .ComputeTSFeatures(data_full,id_var = "entry",
+                                         outcome_var = "target", ...) %>%
     tibble::as_tibble() %>%
     dplyr::bind_cols(
       Treated =
         factor(data_full %>%
                  dplyr::distinct(!!as.name(id_var), .keep_all = T) %>%
                  dplyr::pull(Treated))
-    ) %>%
-    dplyr::select(-c(frequency, nperiods, seasonal_period,
-                     e_acf10, x_acf10, diff2_acf10, diff1_acf10)) %>%
+    ) 
+  # Pivot tibble into long form to compute t-tests.
+  test_tib=feature_treat_df%>%
     tidyr::pivot_longer(-Treated,
                  names_to = "vars",
                  values_to = "val"
@@ -167,5 +171,53 @@ tsfeature_by_treat_df <- function(data_full,
     rstatix::t_test(val ~ Treated) %>%
     rstatix::adjust_pvalue(method = "BH") %>%
     rstatix::add_significance()
-  return(df1_feat)
+  # Remove extraneous column.
+  test_tib= test_tib %>%
+    dplyr::select(-".y.")
+  return(test_tib)
+}
+
+
+
+
+#' Plot the density of a particular feature by treatment.
+#'
+#' @inheritParams TSFeaturesPCScatterplot
+#' @param feature String name of the TS feature to plot. This should be the
+#'    specific name of the feature outputs from the tsfeature package (e.g. 
+#'    call "x_acf1" rather than "acf_features").
+#'
+#' @return 
+FeatureDensity <- function(data_full,id_var = "entry",
+                                          outcome_var = "target",
+                                          treat_indicator = "treatperiod_0",
+                                          feature = "x_acf1",
+                                          ...) {
+  # Identify treated entries.
+  treated_entries <- (data_full %>%
+                        dplyr::filter(!!as.name(treat_indicator) > 0) %>%
+                        dplyr::distinct(!!as.name(id_var)) %>% 
+                        dplyr::pull())
+  data_full <- data_full %>%
+    dplyr::mutate(Treated = as.numeric(!!as.name(id_var) %in% treated_entries))
+  # Obtain TS features for each series, and identify treatment status.
+  feature_treat_df <- .ComputeTSFeatures(data_full,id_var = "entry",
+                                         outcome_var = "target", ...) %>%
+    tibble::as_tibble() %>%
+    dplyr::bind_cols(
+      Treated = factor(data_full %>%
+                         dplyr::distinct(!!as.name(id_var), .keep_all = T) %>%
+                         dplyr::pull(Treated)))
+  
+  feature_density <- ggplot2::ggplot(feature_treat_df)+
+    ggplot2::geom_density(aes(x=!!as.name(feature), color=Treated),alpha=0.4) +
+    ggplot2::theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          panel.background = element_blank(), 
+          axis.line = element_line(colour = "black"))+
+    ggplot2::scale_color_manual(values=c("#E69F00", "#56B4E9"))+
+    ggplot2::labs(title = paste(feature, "Density by Treatment"))
+  
+  return(feature_density)
+  
 }
