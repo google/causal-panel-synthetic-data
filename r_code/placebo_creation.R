@@ -41,9 +41,9 @@ pacman::p_load(dplyr, tidyr, stats, tibble)
 #'     the true treated unit.
 #' @noRd
 .MatchingWithoutReplacement <- function(treated_block,
-                                         control_block,
-                                         id_var,
-                                         treat_period) {
+                                        control_block,
+                                        id_var,
+                                        treat_period) {
   # Initialize an empty vector for the donor IDs that match.
   already_matched <- c()
   # Randomize the order of matching for this greedy approach.
@@ -61,19 +61,19 @@ pacman::p_load(dplyr, tidyr, stats, tibble)
         dplyr::select(-tidyselect::all_of(c(id_var,treat_period))),
       control_block %>%
         dplyr::filter(!!as.name(id_var) %in% setdiff(!!as.name(id_var), 
-                                              already_matched)) %>% 
+                                                     already_matched)) %>% 
         dplyr::select(-tidyselect::all_of(id_var)))
     # Update the vector of already matched donors.
     already_matched[i] <- control_block %>%
       dplyr::filter(!!as.name(id_var) %in% 
-               setdiff(!!as.name(id_var), already_matched)) %>%
+                      setdiff(!!as.name(id_var), already_matched)) %>%
       dplyr::slice(temp_match) %>%
       dplyr::pull(!!as.name(id_var))
   }
   # Store the resulting vectors in a tibble for output.
   df_toreturn <- tibble::tibble(temp_id = already_matched, 
-                        temp_treattime = placebo_treat_period, 
-                        Treatment_Unit = treatment_unit) %>%
+                                temp_treattime = placebo_treat_period, 
+                                Treatment_Unit = treatment_unit) %>%
     dplyr::rename(!!as.name(id_var) := temp_id,
                   !!as.name(treat_period) := temp_treattime)
   
@@ -97,9 +97,9 @@ pacman::p_load(dplyr, tidyr, stats, tibble)
 #' @return A tibble of the same format as data_full, 
 #'    entirely consisting of donor units, some of which are placebo-treated 
 #'    (based on matching).
-#TODO(alexdkellogg):  Revisit whether pivoting will cause issues in the 
+# TODO(alexdkellogg):  Revisit whether pivoting will cause issues in the 
 #    presence of several time varying covariates.
-#TODO(alexdkellogg): Account for multiple treatments, treatment end dates.
+# TODO(alexdkellogg): Account for multiple treatments, treatment end dates.
 CreatePlaceboData <- function(data_full, id_var = "entry",
                               time_var = "period", 
                               treat_indicator = "treatperiod_0",
@@ -151,12 +151,11 @@ CreatePlaceboData <- function(data_full, id_var = "entry",
     id_cols = c(!!as.name(id_var), Treatment_Period),
     values_from = c(!!as.name(outcome_var))
   )
-  
   # Determine control units to assign to placebo treatment group via matching.
   matched_placebo_df_temp <- .MatchingWithoutReplacement(data_wide_m, 
-                                                          cd_for_match, 
-                                                          id_var,
-                                                          "Treatment_Period")
+                                                         cd_for_match, 
+                                                         id_var,
+                                                         "Treatment_Period")
   # We now have the set of control units that form the placebo set, along with 
   # their placebo Treat Period and their corresponding Treat Unit.
   # Assign treatment to our donor only tibble based on matches.
@@ -169,7 +168,7 @@ CreatePlaceboData <- function(data_full, id_var = "entry",
   non_time_vars <- c(id_var, "Treatment_Period", "Treatment_Unit")
   placebo_df_long <- placebo_df_wide %>%
     tidyr::pivot_longer(-all_of(non_time_vars),
-                 names_to = time_var, values_to = outcome_var
+                        names_to = time_var, values_to = outcome_var
     ) %>%
     dplyr::mutate(!!as.name(time_var) := as.numeric(!!as.name(time_var))) %>%
     dplyr::arrange(!!as.name(time_var), !!as.name(id_var)) %>%
@@ -183,6 +182,11 @@ CreatePlaceboData <- function(data_full, id_var = "entry",
         dplyr::select(tidyselect::all_of(c(id_var, time_var, counterfac_var))),
       by = c(id_var, time_var)
     )
+  # If no counterfactual variable, create one in the placebo from the outcome.
+  if(is.null(counterfac_var)){
+    placebo_df_long <- placebo_df_long %>%
+      dplyr::mutate("counter_factual"=!!as.name(outcome_var))
+  }
   
   return(placebo_df_long)
 }
