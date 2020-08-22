@@ -114,7 +114,7 @@ ComputeMetrics <- function(att_list, horizon = c(0,4),
 #' @return A tibble, combining the list of data from input and returning just
 #'    the relevant periods of time with respect to treatment defined by horizon.
 .ExtractSubset <- function(att_list, horizon = c(0, 4)) {
-  stopifnot(length(horizon)==2 & horizon[1]<= horizon[2] )
+  stopifnot(length(horizon) == 2 & horizon[1]<= horizon[2])
   # Keep only the periods within the horizon.
   att_tib <- att_list %>%
     dplyr::bind_rows() %>%
