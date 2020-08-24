@@ -14,7 +14,7 @@ pacman::p_load(
 #' @param treat_impact_mean Initial period treatment impact mean, drawn from
 #'    truncated normal distribution centered here. Bounds are [0,0.25] by
 #'    default, but shift to [a,b] where b=mean+0.25 if the mean is larger than
-#'    0.25 (max of 1)  or a=mean-0.25 if mean is below 0.
+#'    0.25 (max of 1) or a=mean-0.25 if mean is below 0.
 #' @param treat_impact_sd Standard deviation of the truncated normal impact.
 #' @param treat_decay_mean Initial period treatment decay mean, drawn from
 #'    truncated normal distribution centered here. Bounds are [0,0.9] by
@@ -25,17 +25,17 @@ pacman::p_load(
 #'    "random", "observables", "unobservables".
 #' @param rho Mean of truncated normal distribution for the autocorrelation of
 #'    outcome process, with bounds [0, 0.995] by default. If input is negative
-#'    (must be >-0.25). lower bound shifts to mean-0.25.
+#'    (must be >-0.25), lower bound shifts to mean-0.25.
 #' @param rho_scale Standard deviation of truncated normal for autocorrelation.
 #' @param rho_shift Multiplier on the mean rho for control units. Overall
 #'    mean must stay below 1 and above -0.25 (-0.25<rho*rho_shift<1).
 #' @param cov_overlap_scale Number between (-1,1) shifting distribution of
 #'    covariates for a random fraction (prop_treated) of generated x variables.
 #'    A value of 1 shifts the distribution for treatment up on all x's,
-#'     whereas -1 shifts up the distribution for donors.
+#'    whereas -1 shifts up the distribution for donors.
 #' @param num_factors Integer number of time-varying, unobserved factors to
 #'    simulate. For freq="monthly", "weekly", "daily", number of factors must be
-#'     at least 3,4,and 5 respectively.
+#'     at least 3, 4, and 5 respectively.
 #' @param loading_scale Number in (-1,1) shifting loading distribution by
 #'    treatment. Negative values shift loadings up for control units, positive
 #'     values shift loadings distribution up for treated units.
@@ -79,19 +79,11 @@ SyntheticDGP <- function(num_entries = 2000,
 
   # Match the arguments to valid entries.
   set.seed(seed)
-  if (missing(selection)) {
-    selection <- "random"
-  } else {
-    selection <- match.arg(selection)
-  }
-
-  if (missing(freq)) {
-    freq <- "monthly"
-  } else {
-    freq <- match.arg(freq)
-  }
+  selection <- match.arg(selection)
+  freq <- match.arg(freq)
+  
   # Require 5% min in both treat and control.
-  stopifnot(prop_treated >= 0.05 & prop_treated <= 0.95)
+  stopifnot(0.05 <= prop_treated & prop_treated <= 0.95)
   # Require cov_overlap_scale to be between -1 (shift treat down) and 1.
   stopifnot(cov_overlap_scale <= 1 & cov_overlap_scale >= -1)
   # Require 3 factors of more for monthly, 4 for weekly, and 5 daily.
@@ -105,11 +97,10 @@ SyntheticDGP <- function(num_entries = 2000,
   stopifnot(rho * rho_shift < 1 & rho * rho_shift > -0.25)
   # Require the intercept scale to be between -1 and 1.
   stopifnot(intercept_scale <= 1 & intercept_scale >= -1)
-  # Require the intercept scale to be between -1 and 1.
+  # Require the loading scale to be between -1 and 1.
   stopifnot(loading_scale <= 1 & loading_scale >= -1)
   # Stop if there are too few pre treat periods, 20 is a rule of thumb.
   stopifnot(first_treat < 0.8 * num_periods | first_treat >= 20)
-
 
   # Assign covariates and treatment given selection and overlap.
   synth_data_unit <- .UnitLevelSimulation(
