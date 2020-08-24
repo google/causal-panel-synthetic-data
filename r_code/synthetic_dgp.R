@@ -85,7 +85,7 @@ SyntheticDGP <- function(num_entries = 500,
   # Require 5% min in both treat and control.
   stopifnot(0.05 <= prop_treated & prop_treated <= 0.95)
   # Require cov_overlap_scale to be between -1 (shift treat down) and 1.
-  stopifnot(cov_overlap_scale <= 1 & cov_overlap_scale >= -1)
+  stopifnot(-1 <= cov_overlap_scale & cov_overlap_scale <= 1)
   # Require 3 factors of more for monthly, 4 for weekly, and 5 daily.
   if (freq == "monthly") stopifnot(num_factors >= 3)
   if (freq == "weekly") stopifnot(num_factors >= 4)
@@ -93,14 +93,14 @@ SyntheticDGP <- function(num_entries = 500,
   # Require less than 100% TE.
   stopifnot(treat_impact_mean < 1)
   # Require ACF to less than one, and not too negative.
-  stopifnot(rho < 1 & rho > -0.25)
-  stopifnot(rho * rho_shift < 1 & rho * rho_shift > -0.25)
+  stopifnot(-0.25 < rho & rho < 1)
+  stopifnot(-0.25 < rho * rho_shift & rho * rho_shift < 1)
   # Require the intercept scale to be between -1 and 1.
-  stopifnot(intercept_scale <= 1 & intercept_scale >= -1)
+  stopifnot(-1 <= intercept_scale & intercept_scale <= 1)
   # Require the loading scale to be between -1 and 1.
-  stopifnot(loading_scale <= 1 & loading_scale >= -1)
+  stopifnot(-1 <= loading_scale & loading_scale <= 1)
   # Stop if there are too few pre treat periods, 20 is a rule of thumb.
-  stopifnot(first_treat < 0.8 * num_periods | first_treat >= 20)
+  stopifnot(20 <= first_treat | first_treat < 0.8 * num_periods)
 
   # Assign covariates and treatment given selection and overlap.
   synth_data_unit <- .UnitLevelSimulation(
@@ -428,8 +428,12 @@ NoisifyDraw <- function(data_inp, seed=NULL, log_output = T, sig_y = 0.2) {
 #' @param ar_sd AR(1) parameter noise term for the factors.
 #'
 #' @return Tibble with the shocks by shock_name, as well as the factors.
-.BaseFactorHelper <- function(date_tib, shock_name, factor_name,
+.BaseFactorHelper <- function(date_tib, 
+                              shock_name= c("quarter_num", "month_num", 
+                                            "week_num", "day_num"), 
+                              factor_name,
                               ar_model, ar_sd) {
+  shock_name <- match.arg(shock_name)
   # Generate the bounds for the random uniform noise.
   lim <- switch(shock_name,
     "day_num" = 0.1,
@@ -592,7 +596,7 @@ NoisifyDraw <- function(data_inp, seed=NULL, log_output = T, sig_y = 0.2) {
 #'    values shift loadings distribution up for treated units.
 #' @param num_factors_inp Integer number of time-varying, unobserved factors to
 #'    simulate. For freq="monthly", "weekly", "daily", number of factors must be
-#'    at least 3,4,and 5 respectively.
+#'    at least 3, 4, and 5 respectively.
 #' @param int_scale_inp Number in (-1,1) that shifts the mean of a truncated
 #'    normal distribution intercept by treatment assignment. Positive input
 #'    shifts treatment to be larger in size and shifts controls to be smaller.
@@ -638,6 +642,7 @@ NoisifyDraw <- function(data_inp, seed=NULL, log_output = T, sig_y = 0.2) {
                                  impact_sd_inp,
                                  decay_mean_inp,
                                  decay_sd_inp) {
+  type_inp <- match.arg(type_inp)
   # Gather data that is time invariant.
   # First, call to assign treatment, which generates covariates.
   unit_level_tib <- .AssignTreat(
@@ -994,7 +999,7 @@ EncouragementDesignDGP <- function(data_output, complier_frac=0.7,
       ) %>%
     dplyr::ungroup() %>%
     dplyr::select(entry, encouraged, treated)
-  # Combine all the data together for output
+  # Combine all the data together for output.
   data_out <- data_output %>% 
     dplyr::select(-treated) %>%
     dplyr::left_join(itt_tib, by = "entry") %>%
