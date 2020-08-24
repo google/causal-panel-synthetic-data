@@ -155,6 +155,8 @@ SyntheticDGP <- function(num_entries = 500,
     cond_impact_inp =
       conditional_impact_het
   )
+  synth_data_full <- synth_data_full %>%
+    dplyr::arrange(time, entry)
   return(synth_data_full)
 }
 
