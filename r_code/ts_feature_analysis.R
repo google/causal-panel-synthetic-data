@@ -25,7 +25,7 @@ TSFeaturesPlot <- function(data_full,
   type <- match.arg(type)
   # Identify treated observations.
   data_full <- .IdentifyTreated(data_full=data_full, id_var=id_var,
-                                            treat_indicator=treat_indicator)
+                                treat_indicator=treat_indicator)
   
   # Compute the features for each TS, and the principal components of these.
   feature_pc_df <- .ComputeTSFeatures(data_full,id_var = "entry",
@@ -201,12 +201,12 @@ FeatureDensity <- function(data_full, id_var = "entry",
 #' @inheritParams TSFeaturesPCScatterplot
 #'
 #' @return The original tibble of data, with a new Treated indicator column. 
-.IdentifyTreated <- function(data_full, id_var, treat_indicator){
+.IdentifyTreated <- function(data_full, id_var, treat_indicator) {
   # Identify treated entries.
-  treated_entries <- (data_full %>%
-                        dplyr::filter(!!as.name(treat_indicator) > 0) %>%
-                        dplyr::distinct(!!as.name(id_var)) %>% 
-                        dplyr::pull())
+  treated_entries <- data_full %>%
+    dplyr::filter(!!as.name(treat_indicator) > 0) %>%
+    dplyr::distinct(!!as.name(id_var)) %>% 
+    dplyr::pull()
   data_full <- data_full %>%
     dplyr::mutate(Treated = as.numeric(!!as.name(id_var) %in% treated_entries))
   return(data_full)
