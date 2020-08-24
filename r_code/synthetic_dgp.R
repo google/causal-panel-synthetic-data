@@ -53,10 +53,11 @@ pacman::p_load(
 #'    potential untreated outcomes, treatment time, and the relevant x variables
 #'    (loadings, intercept, observables).
 # TODO(alexdkellogg): Allow dgp to be covariates only or factors only?
-SyntheticDGP <- function(num_entries = 2000,
+# TODO(alexdkellogg): Extend to multiple treatment and continuous treatment.
+SyntheticDGP <- function(num_entries = 500,
                          num_periods = 120,
                          first_treat = 70,
-                         freq = c("daily", "weekly", "monthly"),
+                         freq = c("monthly", "weekly", "daily"),
                          prop_treated = 0.4,
                          treat_impact_mean = 0.1,
                          treat_impact_sd = 0.1,
@@ -75,11 +76,10 @@ SyntheticDGP <- function(num_entries = 2000,
                          intercept_scale = 0,
                          conditional_impact_het = -0,
                          rescale_y_mean = 2.5e4,
-                         seed = 19) {
+                         seed = NULL) {
 
   # Match the arguments to valid entries.
-  set.seed(seed)
-  selection <- match.arg(selection)
+  if (!is.null(seed)) set.seed(seed)
   freq <- match.arg(freq)
   
   # Require 5% min in both treat and control.
@@ -149,15 +149,12 @@ SyntheticDGP <- function(num_entries = 2000,
     rescale_y = rescale_y,
     freq_inp = freq
   )
-
-
   # Generate the per period impact (taking account of decay).
   synth_data_full <- .GenerateTreatImpact(
     data_inp = synth_data_full,
     cond_impact_inp =
       conditional_impact_het
   )
-
   return(synth_data_full)
 }
 
@@ -170,10 +167,10 @@ SyntheticDGP <- function(num_entries = 2000,
 #'
 #' @return Noised long form tibble.
 # TODO(alexkellogg): Add non-iid noise process functionality.
-NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
+NoisifyDraw <- function(data_inp, seed=NULL, log_output = T, sig_y = 0.2) {
   # Draws a vector or random normal (mean zero) epsilon values.
   # This noise is added to the outcome, representing a new iid draw.
-  set.seed(seed)
+  if (!is.null(seed)) set.seed(seed)
   eps <- stats::rnorm(nrow(data_inp), sd = sig_y)
   data_inp <- data_inp %>%
     dplyr::mutate(
@@ -259,7 +256,9 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 #' @return Long form tibble with counterfactual (rescaled) outcome appended.
 # TODO(alexdkellogg): Scaling should probably become a function of rho.
 .GenerateCounterfactual <- function(data_inp, num_periods_inp, rescale_y,
-                                    freq_inp) {
+                                    freq_inp = c("monthly", "weekly", "daily")
+                                    ){
+  freq_inp <- match.arg(freq_inp)
   # Compute each of the component pieces for generating counterfactual y.
   outcome_series <- data_inp %>%
     dplyr::select(
@@ -349,8 +348,7 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
       )
     ) %>%
     dplyr::select(-y0)
-
-
+  
   # Define the treatment propagation for each unit and time combo.
   data_inp <- data_inp %>%
     dplyr::left_join(cond_x_walk, by = "entry") %>%
@@ -365,7 +363,7 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
     ) %>%
     dplyr::ungroup() %>%
     dplyr::select(-c(treat_decay, treat_decay, decay_t, cond_treat_impact))
-
+  
   # Add the treatment impact to create potential treated outcome (y1).
   # Also note the empirically observed y.
   data_inp <- data_inp %>%
@@ -390,7 +388,8 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 #' @return Grid in freq_inp units spanning num_period_inp periods, with a
 #'    default start date of 2002-01-01.
 .GenerateTimeGrid <- function(num_periods_inp,
-                              freq_inp) {
+                              freq_inp = c("monthly", "weekly", "daily")) {
+  freq_inp <- match.arg(freq_inp)
   # Creates a tibble that spans the input dates by the input frequency.
   # Stores the relevant info about that date.
   date_start_temp <- "2002-01-01"
@@ -420,8 +419,8 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 
 #' Creates the requisite number of factors beyond trend, given frequency.
 #'
-#' @param date_tib Grid of date time, spanning the desired number of periods.
-#' @param freq_inp String indicating time unit; "daily", "weekly", "monthly".
+#' @param date_tib Tibble with columns for the date time, as well as for each
+#'    component of the date (e.g. day) spanning the desired number of periods.
 #' @param shock_name String indicating the type of shock, one of "quarter_num",
 #'    "month_num", "week_num", "day_num".
 #' @param factor_name String indicating the desired factor name.
@@ -429,7 +428,7 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 #' @param ar_sd AR(1) parameter noise term for the factors.
 #'
 #' @return Tibble with the shocks by shock_name, as well as the factors.
-.BaseFactorHelper <- function(date_tib, freq_inp, shock_name, factor_name,
+.BaseFactorHelper <- function(date_tib, shock_name, factor_name,
                               ar_model, ar_sd) {
   # Generate the bounds for the random uniform noise.
   lim <- switch(shock_name,
@@ -513,7 +512,7 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 #'
 #' @param num_factors_inp Integer number of time-varying, unobserved factors to
 #'    simulate. For freq="monthly", "weekly", "daily", number of factors must be
-#'     at least 3,4,and 5 respectively.
+#'     at least 3, 4, and 5 respectively.
 #' @param num_periods_inp Number of time periods to be generated.
 #' @param freq_inp String indicating time unit: "daily", "weekly", "monthly".
 #' @param ar_rho AR(1) parameter for the factors, fixed to rho=0.2.
@@ -522,9 +521,11 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 #' @return Time only tibble with factors appended.
 # TODO(alexdkellogg): for some reason, get very different results when I
 #    specify the sd=sqrt(ar_sd) into the ar_model -- should be same though!
-.GenerateFactors <- function(num_factors_inp, num_periods_inp, freq_inp,
+.GenerateFactors <- function(num_factors_inp, num_periods_inp, 
+                             freq_inp = c("monthly", "weekly", "daily"),
                              ar_rho = 0.2, ar_sd = 0.75) {
-  # Ar model description -- AR 1 with auto correlation and sd inputs.
+  freq_inp <- match.arg(freq_inp)
+  # AR 1 with auto correlation and sd inputs.
   ar_model <- list(order = c(1, 0, 0), ar = ar_rho)
 
   # Create the date indicator grid along with the first factor (trend).
@@ -546,16 +547,14 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
     .x = base_vec,
     .y = c(glue::glue("factor{2:(length(base_vec)+1)}")),
     .f = ~ .BaseFactorHelper(
-      date_tib = factor_tib,
-      freq_inp = freq_inp, shock_name = .x,
+      date_tib = factor_tib, shock_name = .x,
       factor_name = .y, ar_model = ar_model,
       ar_sd = ar_sd
     )
   )
 
   factor_tib <- factor_tib %>% dplyr::bind_cols(shocks_tib)
-
-
+  
   if (num_factors_inp > length(base_vec) + 1) {
     # Add additional factors beyond the number implied by freq_inp.
     extra_factors_names <-
@@ -587,13 +586,13 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 #' @param cov_overlap_inp Number between (-1,1) shifting distribution of
 #'    covariates for a random fraction (prop_treated) of generated x variables.
 #'    A value of 1 shifts the distribution for treatment up on all x's,
-#'     whereas -1 shifts up the distribution for donors.
+#'    whereas -1 shifts up the distribution for donors.
 #' @param loading_scale_inp Number in (-1,1) shifting loading distribution by
 #'    treatment. Negative values shift loadings up for control units, positive
-#'     values shift loadings distribution up for treated units.
+#'    values shift loadings distribution up for treated units.
 #' @param num_factors_inp Integer number of time-varying, unobserved factors to
 #'    simulate. For freq="monthly", "weekly", "daily", number of factors must be
-#'     at least 3,4,and 5 respectively.
+#'    at least 3,4,and 5 respectively.
 #' @param int_scale_inp Number in (-1,1) that shifts the mean of a truncated
 #'    normal distribution intercept by treatment assignment. Positive input
 #'    shifts treatment to be larger in size and shifts controls to be smaller.
@@ -621,7 +620,10 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 #'
 #' @return Tibble with all individual level work completed.
 .UnitLevelSimulation <- function(n_inp,
-                                 type_inp,
+                                 type_inp = c(
+                                   "random", "observables",
+                                   "unobservables"
+                                 ),
                                  cov_overlap_inp,
                                  loading_scale_inp,
                                  num_factors_inp,
@@ -690,10 +692,15 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 #'
 #' @return Tibble with treatment assignment and individual specific covariates
 #'    shifted conditional on treatment assignment and inputs.
-.AssignTreat <- function(n_inp, type_inp, cov_overlap_inp,
-                         loading_scale_inp, rho_inp = rho_inp,
+.AssignTreat <- function(n_inp, 
+                         type_inp = c( "random",
+                                       "observables", 
+                                       "unobservables"),
+                         cov_overlap_inp,
+                         loading_scale_inp, rho_inp,
                          rho_scale_inp, rho_shift_inp, num_factors_inp,
                          int_scale_inp, prop_treated_inp) {
+  type_inp <- match.arg(type_inp)
   # Generate covariates with varying levels of overlap for shifted subset.
   covariate_tib <- .GenCovariates(
     n_inp = n_inp, cov_overlap_inp = cov_overlap_inp,
@@ -713,7 +720,7 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
   else {
     # Assign treatment based on either observable or unobservable Xs.
     relevant_xs <- ifelse(type_inp == "observables", "obs", "unobs")
-    # First, create covariates with
+    # Select the subset of relevant covariates given selection type.
     z <- covariate_tib %>%
       dplyr::select(tidyr::starts_with(relevant_xs)) %>%
       as.matrix()
@@ -724,7 +731,7 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
       score =
         z %*% stats::rnorm(n = ncol(z), mean = 0, sd = 1)
     ) %>%
-      dplyr::mutate(prop_score = 1 / (1 + exp(score)))
+      dplyr::mutate(prop_score = 1 / (1 + exp(-score)))
 
     # Add random noise to the score and take the top fraction as treated.
     treat_covar_tib <- prob_treat %>%
@@ -772,18 +779,12 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
   tib_pre_loadings <- treat_tib_inp %>%
     dplyr::group_by(treated) %>%
     dplyr::mutate(
-      # intercept=stats::rexp(dplyr::n(), 1+(1-treated)*int_scale_inp),
       intercept = truncnorm::rtruncnorm(
         n = dplyr::n(), a = 4, b = 11,
         mean = 7.5 - 2 * (1 - treated) * int_scale_inp +
           2 * treated * (int_scale_inp),
         sd = 0.7
       ),
-      # intercept=stats::runif(dplyr::n(), min=5,max=8-(1-treated)*
-      # int_scale_inp),
-      # autocorr=stats::runif(dplyr::n(),ifelse(treated,rho_inp,
-      #                                      rho_inp*rho_scale_inp),
-      #                       max=0.95),
       autocorr = truncnorm::rtruncnorm(
         n = dplyr::n(), a = rho_lb, b = 0.995,
         mean = ifelse(treated, rho_inp,
@@ -820,7 +821,7 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 #' @param cov_overlap_inp Number between (-1,1) shifting distribution of
 #'    covariates for a random fraction (prop_treated) of generated x variables.
 #'    A value of 1 shifts the distribution for treatment up on all x's,
-#'     whereas -1 shifts up the distribution for donors.
+#'    whereas -1 shifts up the distribution for donors.
 #' @param frac_shifted Fraction of units (random) to receive covariate shift.
 #'
 #' @return A tibble with observable and unobservable x variables.
@@ -919,13 +920,13 @@ NoisifyDraw <- function(data_inp, seed, log_output = T, sig_y = 0.2) {
 
 #' Reformats output of SyntheticDGP for easy estimation using our functions.
 #'
-#' @param data_ouput Long form tibble, output of SyntheticDGP after noised.
+#' @param data_output Long form tibble, output of SyntheticDGP after noised.
 #'
 #' @return A reformatted tibble with default column names.
-FormatForEst <- function(data_ouput) {
+FormatForEst <- function(data_output) {
   # Reformats the synthetic data for default estimation by my estimators.
   # For estimation, we want a dummy for the treated units in treated times.
-  reformatted_data <- data_ouput %>%
+  reformatted_data <- data_output %>%
     dplyr::mutate(treatperiod_0 = (treated == 1) * (post_treat_t >= 0)) %>%
     dplyr::rename(
       potential_post_t = post_treat_t,
@@ -941,6 +942,65 @@ FormatForEst <- function(data_ouput) {
     )
 
   return(reformatted_data)
+}
+
+#' Transforms SyntheticDGP output into an encouragement design.
+#'
+#' @param data_output Long form tibble, output of SyntheticDGP after noised.
+#' @param complier_frac Fraction of units assigned to treatment that actually
+#'    take-up the treatment. Also, 1-complier_frac of those not assigned to
+#'    treatment take-up treatment regardless.
+#' @param selection_vars Variables on which take-up is based, as a vector of
+#'    column names. 
+#' @param seed Random number seed for replicability of who takes-up treatment.
+#'
+#' @return A tibble that takes the treatment assignment from data_output and
+#'    perturbs it into an encouragement design, where entries decide themselves
+#'    whether to accept their treatment assignment. New columns are 
+#'    encouragement, the assigned treatment group, and treated, which is the 
+#'    actual take-up for that unit -- which depends on the fraction of compliers
+#'    and the selection mechanism into take-up. The observed outcome, y, is also
+#'    altered to reflect the take-up of treatment rather than the assignment.
+EncouragementDesignDGP <- function(data_output, complier_frac=0.7,
+                                   selection_vars=NULL, seed = NULL){
+  if (!is.null(seed)) set.seed(seed)
+  # Grab the columns relevant to the encouragement design definitions.
+  itt_tib <- data_output %>%
+    dplyr::distinct(entry, .keep_all=T) %>%
+    dplyr::select(tidyselect::all_of(c("entry", "treated", "y0", "y1",
+                                       selection_vars))) %>%
+    dplyr::mutate(sel_score = treated) %>% 
+    dplyr::rename(encouraged="treated")
+  # If selection into take up is desired, model it.
+  if (!is.null(selection_vars)) {
+    selection_mat <- itt_tib %>% 
+      dplyr::select(tidyselect::all_of(selection_vars)) %>%
+      as.matrix()
+    random_proj <- rnorm(n=ncol(selection_mat), 0, 1)
+    proj_vec <- as.vector(selection_mat %*% random_proj)
+    # Create an N x 1 vector of selection scores to rank each unit.
+    itt_tib <- itt_tib %>% dplyr::mutate(sel_score = sel_score + proj_vec)
+  }
+  # Add additional random noise to the selection score, assign take up.
+  itt_tib <- itt_tib %>%
+    dplyr::group_by(encouraged) %>%
+    dplyr::mutate(
+      p_score = 1 / (1 + exp(-sel_score)),
+      u = runif(n = dplyr::n(), min = 0, max = 1),
+      p_score = p_score + u,
+      treated = as.numeric(dplyr::percent_rank(p_score) > 
+                             encouraged * (1-complier_frac) + 
+                             (1-encouraged) * complier_frac) 
+      ) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(entry, encouraged, treated)
+  # Combine all the data together for output
+  data_out <- data_output %>% 
+    dplyr::select(-treated) %>%
+    dplyr::left_join(itt_tib, by = "entry") %>%
+    dplyr::mutate(y = treated*y1 + (1-treated)*y0) %>%
+    dplyr::select(time, entry, encouraged, treated, dplyr::everything())
+ return(data_out)
 }
 
 #' Aggregate per week, month, quarter data to a coarser frequency.
