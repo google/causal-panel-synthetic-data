@@ -5,6 +5,9 @@ pacman::p_load(dplyr, ggplot2, ggpubr)
 
 #' Create a Gap Plot of the ATT over time, along with CI bounds.
 #'
+#' ATT = Average Treatment Effect on the Treated. Stand-in for other aggregation
+#'     methods, such as median or aggregate treatment effect on the treated.
+#' CI = Confidence interval, defaults to 95%. 
 #' @param att_tib Tibble of ATTs for a single dataset, with CI bounds.
 #' @param time_var String name for the time relative to treatment column.
 #' @param horizon Number range for the x axis of the plot.
@@ -25,7 +28,7 @@ GapPlot <- function(att_tib, time_var = "post_period_t", horizon = c(-10, 30),
                     plot_title = NULL,
                     plot_y_lab = NULL) {
   stopifnot(length(horizon) == 2 & horizon[1] < horizon[2])
-  # Keep the relevant columns and time periods from out otucome tibble.
+  # Keep the relevant columns and time periods from the outcome tibble.
   att_tib <- att_tib %>%
     dplyr::select(tidyselect::all_of(
       c(time_var, pred_var, ub_var, lb_var, counterfac_var)
@@ -78,8 +81,10 @@ GapPlot <- function(att_tib, time_var = "post_period_t", horizon = c(-10, 30),
 #'
 #' @param pred_series_tib Tibble of predicted and true series, long form. That
 #'    is, each row should represent a unit in a particular time, and have the
-#'    data on their true outcome as well as a prediction from some method.
-#' @param time_var String name of the time column.
+#'    data on their true outcome as well as a prediction from some method. 
+#'    Since estimators will typically fail with missing data, there should be 
+#'    no missing data in this post-estimation input.
+#' @param time_var String name of the time column, from 1 to max period.
 #' @param id_var String name of the id column.
 #' @param outcome_var String name of the true outcome variable.
 #' @param pred_var String name of the predicted outcome from some method.
@@ -94,14 +99,16 @@ AssortedSeriesPlot <- function(pred_series_tib, time_var = "period",
                                pred_var = "point.pred",
                                treat_period_var = "Treatment_Period",
                                method_name = NULL) {
-  # Get the ids for the top 3 units by first period size.
+  # Get the ids for the top 3 units by their first observed period size (by id). 
   big_ids <- pred_series_tib %>%
-    dplyr::filter(!!as.name(time_var) == 1) %>%
+    dplyr::arrange(!!as.name(time_var), !!as.name(id_var)) %>%
+    dplyr::distinct(!!as.name(id_var), .keep_all=T) %>%
     dplyr::slice_max(n = 3, order_by = !!as.name(outcome_var)) %>%
     dplyr::select(tidyselect::all_of(c(id_var, treat_period_var)))
   # Get the ids for the 3 random units.
   random_ids <- pred_series_tib %>%
-    dplyr::filter(!!as.name(time_var) == 1) %>%
+    dplyr::arrange(!!as.name(time_var), !!as.name(id_var)) %>%
+    dplyr::distinct(!!as.name(id_var), .keep_all=T) %>%
     dplyr::filter(!!as.name(id_var) %in%
       setdiff(!!as.name(id_var), big_ids %>%
         dplyr::pull(!!as.name(id_var)))) %>%
