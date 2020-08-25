@@ -21,10 +21,10 @@ pacman::p_load(dplyr, ggplot2, ggpubr)
 #' @return A gap plot, with time to treatment on the x-axis and the outcome of
 #'    interest on the y-axis, typically the ATT.
 GapPlot <- function(att_tib, time_var = "post_period_t", horizon = c(-10, 30),
-                    pred_var = "observed_mean_abs_tot",
-                    counterfac_var = "mean_abs_cf_tot",
-                    ub_var = "jackknife_ub_mean_abs_tot",
-                    lb_var = "jackknife_lb_mean_abs_tot",
+                    pred_var = "observed_mean_abs_att",
+                    counterfac_var = "mean_abs_cf_att",
+                    ub_var = "jackknife_ub_mean_abs_att",
+                    lb_var = "jackknife_lb_mean_abs_att",
                     plot_title = NULL,
                     plot_y_lab = NULL) {
   stopifnot(length(horizon) == 2 & horizon[1] < horizon[2])
