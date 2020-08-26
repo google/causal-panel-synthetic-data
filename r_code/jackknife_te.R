@@ -1,12 +1,5 @@
 pacman::p_load(dplyr, furrr, stringr, tidyr, tibble, resample)
 
-.CarefulDivision <- function(num, denom){
-  if(is.na(denom) | denom==0){
-    return(NA)
-  } else{
-    return(num/denom)
-  }
-}
 #' Compute the true treatment effects for the data by post treatment time.
 #'
 #' @inheritParams ComputeTreatmentEffect
