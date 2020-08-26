@@ -18,7 +18,7 @@ pacman::p_load(dplyr, ggplot2, quadprog, purrr, furrr, tidyr, glue, tibble)
                             pred_var = "point.pred",
                             response_var = "response") {
   # Combine list of estimates into a single tibble by joining on true variables.
-  # Rename duplicated point.pred columns to m_pred#.
+  # Rename duplicated point.pred columns to m_pred`#`, for each method number.
   tib_out <- pred_list %>%
     purrr::reduce(dplyr::left_join,
       by = c(id_var, time_var, treat_time_var, response_var)
@@ -59,13 +59,17 @@ pacman::p_load(dplyr, ggplot2, quadprog, purrr, furrr, tidyr, glue, tibble)
 #'
 #' @param to_weight_tib Input data, either an individual series tibble or a full
 #'    dataset with all units. Contains the various method predictions and true
-#'    outcomes to estimate off of.
+#'    outcomes used to estimate.
 #' @inheritParams .EnsemblePlaceboWeights
 #'
 #' @return Vector of the optimal combination of methods to predict the true
 #'    outcome given the constraints.
 .WeightSolver <- function(to_weight_tib, intercept_allowed, constrained,
-                          method_names, counterfac_var) {
+                          method_names,
+                          counterfac_var) {
+  stopifnot(method_names %in%
+              c("CausalImpact", "Gsynth", "SDID", "SDID_Uncon", "SCM"))
+  stopifnot(length(method_names)>0)
   # Create a matrix of the prediction series by method.
   x <- to_weight_tib %>%
     dplyr::select(tidyselect::contains("m_pred")) %>%
@@ -84,7 +88,7 @@ pacman::p_load(dplyr, ggplot2, quadprog, purrr, furrr, tidyr, glue, tibble)
   # Create the constraints for the optimization without an intercept.
   # Namely, positive weight on each method, and that they sum to 1.
   c <- cbind(rep(1, length(method_names)), diag(length(method_names)))
-  # Ammend the constraints if an intercept is allowed (can be negative).
+  # Amend the constraints if an intercept is allowed (can be negative).
   if (intercept_allowed) c <- t(cbind(0, rbind(1, diag(length(method_names)))))
   # Set up the remaining inputs for the quadratic programming solver.
   b <- c(1, rep(0, length(method_names)))
@@ -129,11 +133,14 @@ pacman::p_load(dplyr, ggplot2, quadprog, purrr, furrr, tidyr, glue, tibble)
 #'    determined as a function of the user inputted constraints, and estimated
 #'    as the best combination of the methods for predicting all post treatment
 #'    period outcomes in the placebo data.
-.EnsemblePlaceboWeights <- function(method_names, combined_methods_tib,
+.EnsemblePlaceboWeights <- function(method_names, 
+                                    combined_methods_tib,
                                     indiv_weights, constrained,
                                     intercept_allowed, time_var,
                                     id_var, counterfac_var,
                                     treat_time_var = "Treatment_Period") {
+  stopifnot(method_names %in%
+              c("CausalImpact", "Gsynth", "SDID", "SDID_Uncon", "SCM"))
   # Store only the post treatment period of our predictions.
   post_treat_combined_tib <- combined_methods_tib %>%
     dplyr::filter(!!as.name(time_var) >= !!as.name(treat_time_var))
@@ -197,9 +204,10 @@ pacman::p_load(dplyr, ggplot2, quadprog, purrr, furrr, tidyr, glue, tibble)
 #'
 #' @return A long form tibble of the estimated series with imputed potential
 #'    untreated outcome for each period and treated unit.
-# TODO(alexdkellogg): Find a way to pass "..." to the estimators, so user can
-#    specify, for each method, the particular estimator they want to implement.
-.PlaceboEstimator <- function(method_name, placebo_data, ...) {
+.PlaceboEstimator <- function(method_name, 
+                              placebo_data, ...) {
+  stopifnot(method_name %in%
+              c("CausalImpact", "Gsynth", "SDID", "SDID_Uncon", "SCM"))
   # Define the estimator call, and apply.
   # MC and SDID Unconstrained are exceptions to the rule (no unique function).
   if (method_name == "MC") {
@@ -209,10 +217,11 @@ pacman::p_load(dplyr, ggplot2, quadprog, purrr, furrr, tidyr, glue, tibble)
     return(EstimateSDIDSeries(placebo_data, constrained = F, ...))
   }
   # Define the call to the function based on method name, and cal.
-  estimator_call <- paste("Estimate", method_name, "Series", sep = "")
+  estimator_call <- paste0("Estimate", method_name, "Series")
   est_out <- do.call(estimator_call, list(placebo_data, ...))
   return(est_out)
 }
+
 #' Estimates ensemble outcomes combining methods with placebo optimal weights.
 #'
 #' @param method_names Vector of strings for the names of methods to ensemble.
@@ -241,7 +250,8 @@ pacman::p_load(dplyr, ggplot2, quadprog, purrr, furrr, tidyr, glue, tibble)
 #    periods after treatment, rather than the full post-treat time period.
 # TODO(alexdkellogg): Update the ensemble so that it averages over several
 #    placebo datasets. Learn time vs accuracy trade-off.
-EstimateEnsemble <- function(method_names, true_data, pred_list,
+EstimateEnsemble <- function(method_names, 
+                             true_data, pred_list,
                              constrained = T, intercept_allowed = T,
                              indiv_weights = F, time_var = "period",
                              id_var = "entry", outcome_var = "target",
@@ -249,8 +259,9 @@ EstimateEnsemble <- function(method_names, true_data, pred_list,
                              counterfac_var = "counter_factual") {
   # Ensure the method names are appropriately specified.
   stopifnot(method_names %in%
-    c("CausalImpact", "Gsynth", "SDID", "SDID_Uncon", "SCM"))
-
+              c("CausalImpact", "Gsynth", "SDID", "SDID_Uncon", "SCM"))
+  # Check that dimension of the weight vector equals the number of methods.
+  stopifnot(length(method_names) == length(pred_list))
   # Create a placebo dataset from true_data via matching.
   placebo_data <- CreatePlaceboData(true_data,
     id_var = id_var,
@@ -258,15 +269,15 @@ EstimateEnsemble <- function(method_names, true_data, pred_list,
     outcome_var = outcome_var,
     counterfac_var = counterfac_var
   )
-  # Store the mapping between true treated unit and it's placebo treated unit.
+  # Store the mapping between true treated unit and its placebo treated unit.
   unit_mapping <- placebo_data %>%
     dplyr::filter(!is.na(Treatment_Period)) %>%
     dplyr::distinct(entry, Treatment_Unit)
   # Estimate the counterfactual series for each method.
   # Bug in future library requires calling function names to have them
   # recognized as functions in each parallel instance.
-  estimate_bart_series
-  estimate_gfoo_series
+  EstimateBARTSeries
+  EstimateGfooSeries
   EstimateGsynthSeries
   EstimateSDIDSeries
   EstimateCausalImpactSeries
@@ -278,8 +289,6 @@ EstimateEnsemble <- function(method_names, true_data, pred_list,
     outcome_var = outcome_var, treat_indicator = treat_indicator,
     counterfac_var = counterfac_var
   )
-  # estimates_list=lapply(method_names, .PlaceboEstimator,
-  #                       placebo_data = placebo_data)
   names(estimates_list) <- method_names
   # Create the default counterfactual variable, which exists in placebo data.
   temp_cf <- ifelse(is.null(counterfac_var), "counter_factual", counterfac_var)
