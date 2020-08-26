@@ -1,5 +1,12 @@
 pacman::p_load(dplyr, furrr, stringr, tidyr, tibble, resample)
 
+.CarefulDivision <- function(num, denom){
+  if(is.na(denom) | denom==0){
+    return(NA)
+  } else{
+    return(num/denom)
+  }
+}
 #' Compute the true treatment effects for the data by post treatment time.
 #'
 #' @inheritParams ComputeTreatmentEffect
@@ -16,8 +23,8 @@ pacman::p_load(dplyr, furrr, stringr, tidyr, tibble, resample)
                                      counterfac_var) {
   effect_type <- match.arg(effect_type)
   # Column names for output.
-  cf_abs_col <- paste(effect_type, "_abs_cf_att", sep = "")
-  cf_pct_col <- paste(effect_type, "_pct_cf_att", sep = "")
+  cf_abs_col <- paste0(effect_type, "_abs_cf_att")
+  cf_pct_col <- paste0(effect_type, "_pct_cf_att")
 
   # Computing the relevant effect and storing as tibble.
   cf_att_df <- pred_series_tib %>%
@@ -34,12 +41,21 @@ pacman::p_load(dplyr, furrr, stringr, tidyr, tibble, resample)
           !!as.name(counterfac_var))
       ),
       !!as.name(cf_pct_col) := dplyr::case_when(
-        effect_type == "aggregate" ~ (sum(!!as.name(outcome_var)) /
-          sum(!!as.name(counterfac_var))) - 1,
-        effect_type == "mean" ~ mean((!!as.name(outcome_var) /
-          !!as.name(counterfac_var)) - 1),
-        effect_type == "median" ~ median((!!as.name(outcome_var) /
-          !!as.name(counterfac_var)) - 1)
+        effect_type == "aggregate" ~ 
+          ifelse(sum(!!as.name(counterfac_var))==0, NA_real_,
+                 (sum(!!as.name(outcome_var)) /
+                    sum(!!as.name(counterfac_var))) - 1  
+                 ),
+        effect_type == "mean" ~
+          ifelse(!!as.name(counterfac_var)==0, NA_real_,
+                 mean((!!as.name(outcome_var) /
+                         !!as.name(counterfac_var)) - 1)
+                 ),
+        effect_type == "median" ~ 
+          ifelse(!!as.name(counterfac_var)==0, NA_real_,
+                 median((!!as.name(outcome_var) /
+                           !!as.name(counterfac_var)) - 1)               
+                 )
       )
     ) %>%
     dplyr::ungroup()
@@ -65,15 +81,14 @@ pacman::p_load(dplyr, furrr, stringr, tidyr, tibble, resample)
 #' @return Tibble with the jackknife estimates of the desired effect type by
 #'    time to treatment, alongside the number of treated units in that time
 #'    period and the confidence bounds (for both percent and absolute TE).
+# TODO(alexdkellogg): I think the jackknifing of the "aggregate" TE is not doing
+#    what we want. Fix this -- for now, restricting functionality.
 ComputeTreatmentEffect <- function(pred_series_tib,
                                    time_var = "period",
                                    treat_period_var = "Treatment_Period",
                                    pred_var = "point.pred",
                                    outcome_var = "response",
-                                   effect_type = c(
-                                     "mean", "median",
-                                     "aggregate"
-                                   ),
+                                   effect_type = c("mean", "median"),
                                    alpha_ci = 0.95,
                                    counterfac_var = "counter_factual",
                                    post_treat_only = F) {
@@ -96,37 +111,42 @@ ComputeTreatmentEffect <- function(pred_series_tib,
       counterfac_var = counterfac_var
     )
   }
-
   # Generate a list of observed effects by time-to-treatment.
   effects_to_jk <- pred_series_tib %>%
     dplyr::mutate(
       abs_eff = !!as.name(outcome_var) - !!as.name(pred_var),
-      pct_eff = (!!as.name(outcome_var) / !!as.name(pred_var)) - 1
+      pct_eff = ifelse(!!as.name(pred_var)==0, NA_real_,
+                       (!!as.name(outcome_var) / !!as.name(pred_var)) - 1)
     ) %>%
     split(.[["post_period_t"]])
 
-  jk_comp_abs <- effects_to_jk %>%
-    furrr::future_map(~ .[["abs_eff"]])
   # Jackknife the relevant effect (e.g. mean TE) for absolute terms.
   jk_comp_abs <- switch(effect_type,
-    "mean" = jk_comp_abs %>%
+    "mean" = effects_to_jk %>%
+      furrr::future_map(~ .[["abs_eff"]]) %>%
       furrr::future_map(~ resample::jackknife(., mean)),
-    "median" = jk_comp_abs %>%
+    "median" = effects_to_jk %>%
+      furrr::future_map(~ .[["abs_eff"]]) %>%
       furrr::future_map(~ resample::jackknife(., median)),
-    "aggregate" = jk_comp_abs %>%
-      furrr::future_map(~ resample::jackknife(., sum))
-  )
-  jk_comp_pct <- effects_to_jk %>%
-    furrr::future_map(~ .[["pct_eff"]])
+    "aggregate" = effects_to_jk %>%
+      furrr::future_map(~ .[c(outcome_var,pred_var)]) %>%
+      furrr::future_map(~ resample::jackknife(., function(x) {
+       sum(x[[outcome_var]]) - sum(x[[pred_var]]) }))
+    )
   # Jackknife the relevant effect (e.g. mean TE) for percentage terms.
   jk_comp_pct <- switch(effect_type,
-    "mean" = jk_comp_pct %>%
+    "mean" = effects_to_jk %>%
+      furrr::future_map(~ .[["pct_eff"]]) %>%
       furrr::future_map(~ resample::jackknife(., mean)),
-    "median" = jk_comp_pct %>%
+    "median" = effects_to_jk %>%
+      furrr::future_map(~ .[["pct_eff"]]) %>%
       furrr::future_map(~ resample::jackknife(., median)),
-    "aggregate" = jk_comp_pct %>%
+    "aggregate" = effects_to_jk %>%
+      furrr::future_map(~ .[c(outcome_var,pred_var)]) %>%
       furrr::future_map(~ resample::jackknife(., function(x) {
-        (sum(x[[outcome_var]]) / sum(x[[pred_var]])) - 1
+        out <- ifelse(sum(x[[pred_var]])==0, NA_real_,
+               (sum(x[[outcome_var]]) / sum(x[[pred_var]])) - 1)
+        return(out)
       }))
   )
   # Gather the bounds on the confidence intervals and format as tibble.
