@@ -1,15 +1,15 @@
 pacman::p_load(
   dplyr, tibble, CausalImpact, gsynth, tidyr, Matrix, quadprog,
-  janitor, stats, readr, bigstatsr
+  janitor, stats, readr, bigstatsr, purrr, furrr
 )
 
 # TODO(alexdkellogg): How to handle negative point predictions (which mess up
 #    computation of percent effects). For synthetic data, just set to 0 as all
 #    data is positive. If data can be negative, perhaps just shift up data.
-# TODO(alexdkellogg): rename the output of the estimates. Keep target instead of
+# TODO(alexdkellogg): Rename the output of the estimates. Keep target instead of
 #    switching to "response". Get rid of "point.pred" notation, switch to "_"?
 
-#' Estimate the causal imapct for a single unit.
+#' Estimate the causal impact for a single unit.
 #'
 #' @param treat_data Individual treated unit time series.
 #' @param control_data Matrix of control time series.
@@ -20,7 +20,7 @@ pacman::p_load(
 #'
 #' @return Output from the CausalImpact function for the effect of treatment on
 #'    a single treated unit.
-# TODO(alexdkellogg): figure out how to introduce flexibility with ... using
+# TODO(alexdkellogg): Figure out how to introduce flexibility with ... using
 #    arguments that causalimpact can handle.
 .CausalImpactHelper <- function(treat_data,
                                 control_data,
@@ -28,9 +28,9 @@ pacman::p_load(
                                 post_range) {
   causal_est <- CausalImpact::CausalImpact(
     cbind(treat_data,
-      control_data,
-      deparse.level = 0
-    ),
+          control_data,
+          deparse.level = 0
+          ),
     pre_range,
     post_range
   )
@@ -72,7 +72,7 @@ EstimateCausalImpactSeries <- function(data_full,
   # Create a dataframe of the subset of control units.
   cd <- data_full %>% dplyr::filter(!!as.name(id_var) %in% ct_entries)
   cd <- merge(cd, data.frame(entry = ct_entries, rank = seq_along(ct_entries)))
-  # Construct the control data matrix, i=time, j=unit, value=outcome.
+  # Construct the control data matrix, i=time, j=unit, x=outcome.
   donor_outcome_matrix <- as.matrix(Matrix::sparseMatrix(
     x = cd[[outcome_var]],
     i = cd[[time_var]],
@@ -89,7 +89,7 @@ EstimateCausalImpactSeries <- function(data_full,
   list_of_input_data <- split_treat_data %>%
     furrr::future_map(~ .[[outcome_var]])
 
-  # Store the pre treatment range for each treated list into it's own list.
+  # Store the pre treatment range for each treated list into its own list.
   list_of_pretreat_ranges <- split_treat_data %>%
     furrr::future_map(~ .[[treat_indicator]]) %>%
     furrr::future_map(~ range(1, sum(. == 0)))
@@ -98,14 +98,14 @@ EstimateCausalImpactSeries <- function(data_full,
     furrr::future_map(~ .[[treat_indicator]]) %>%
     furrr::future_map(~ range(sum(. == 0) + 1, sum(. == 0) + sum(. == 1)))
   # Map these input lists into parallelized computation of the causal impact
-  # estiamtor using the helper function (wrapper).
+  # estimator using the helper function (wrapper).
   list_helper_out <- furrr::future_pmap(list(
     list_of_input_data,
     list_of_pretreat_ranges,
     list_of_posttreat_ranges
-  ),
-  .CausalImpactHelper,
-  control_data = donor_outcome_matrix
+    ),
+    .CausalImpactHelper,
+    control_data = donor_outcome_matrix
   )
   # Grab the relevant output from causal impact -- the series of predictions.
   list_of_causalimpact_series <- list_helper_out %>%
@@ -116,7 +116,7 @@ EstimateCausalImpactSeries <- function(data_full,
     tempid = rep(sort(tr_entries),
       each = max(data_full[[time_var]])
     ),
-    temp_t = rep(1:max(data_full[[time_var]]),
+    temp_t = rep(seq(max(data_full[[time_var]])),
       times = length(tr_entries)
     )
   )
@@ -145,7 +145,8 @@ EstimateCausalImpactSeries <- function(data_full,
     by = c(id_var, time_var)
     ) %>%
     dplyr::arrange(!!as.name(time_var), !!as.name(id_var)) %>%
-    dplyr::mutate(pct.effect = (response / point.pred) - 1) %>%
+    dplyr::mutate(pct.effect = ifelse(point.pred==0, NA, 
+                                      (response / point.pred) - 1)) %>%
     tibble::as_tibble()
   # If the input data has counterfactuals, compute counterfactual effects.
   if (!is.null(counterfac_var)) {
@@ -160,7 +161,8 @@ EstimateCausalImpactSeries <- function(data_full,
       ) %>%
       dplyr::mutate(
         cf_point.effect = (response - !!as.name(counterfac_var)),
-        cf_pct.effect = (response / !!as.name(counterfac_var)) - 1
+        cf_pct.effect = ifelse(!!as.name(counterfac_var)==0, NA, 
+                               (response / !!as.name(counterfac_var)) - 1)
       )
   }
   rownames(causalimpact_series_output) <- NULL
@@ -210,7 +212,7 @@ EstimateGsynthSeries <- function(data_full,
     # Get all individual effects for all time periods.
     # Renames the multi-dimensional array output for easy pivotting.
     gsynth_indiv_te_series <-
-      gsynth_agg_te_all_t$est.ind[, , 1:(gsynth_agg_te_all_t$Ntr)] %>%
+      gsynth_agg_te_all_t$est.ind[, , seq((gsynth_agg_te_all_t$Ntr))] %>%
       tibble::as_tibble() %>%
       dplyr::mutate(!!as.name(time_var) := seq_len(nrow(.))) %>%
       janitor::clean_names() %>%
@@ -267,7 +269,8 @@ EstimateGsynthSeries <- function(data_full,
     dplyr::rename(response = outcome_var) %>%
     dplyr::mutate(
       point.pred = response - point.effect,
-      pct.effect = (response / point.pred) - 1
+      pct.effect = ifelse(point.pred==0, NA, 
+                          (response / point.pred) - 1)
     )
   # Add counterfactual data if specified.
   if (!is.null(counterfac_var)) {
@@ -282,8 +285,9 @@ EstimateGsynthSeries <- function(data_full,
       ) %>%
       dplyr::mutate(
         cf_point.effect = (response - !!as.name(counterfac_var)),
-        cf_pct.effect = (response / !!as.name(counterfac_var)) - 1
-      )
+        cf_pct.effect = ifelse(!!as.name(counterfac_var)==0, NA, 
+                               (response / !!as.name(counterfac_var)) - 1)
+        )
   }
   # Reorder columns for consistency across methods.
   gsynth_series_output <- gsynth_series_output %>%
@@ -308,11 +312,12 @@ EstimateGsynthSeries <- function(data_full,
 #'
 #' @return Optimal weights given the control data in m_mat and the data we are
 #'    trying to have it equal.
-.SyntheticControlWeight <- function(m_mat, target, zeta = 1, constrained = T) {
-  if (nrow(m_mat) != length(target)) {
+.SyntheticControlWeight <- function(m_mat, target, zeta = 1.0, 
+                                    constrained = T) {
+  if (nrow(m_mat) != length(target) || length(target) == 0) {
     stop("invalid dimensions")
   }
-
+  
   # Adjust penalty because solve.QP cannot have 0 penalty for quadratic term.
   if (zeta == 0) {
     zeta <- 1e-06
@@ -331,25 +336,39 @@ EstimateGsynthSeries <- function(data_full,
   # The first nrow(M) impose that M*weights - imbalance = target.
   # The next imposes that sum(weights)=1,
   # and the remaining constraints impose the positivity of our weights.
-
-  # By default, allow unconstrained estimation of weights.
+  
+  # Number of equality constrains.
   meq <- nrow(m_mat) + as.numeric(constrained)
+  # Each row of a_t is a donor unit, with the constraint that the combination
+  # of donors and weights equals the target added column-wise.
   a_t <- cbind(m_mat, diag(1, nrow(m_mat)))
   # Set up the constraints if desired.
   if (constrained) {
+    # Add on extra constraints, that weights sum to 1 and are non-negative.
     a_t <- rbind(
       a_t,
       c(rep(1, ncol(m_mat)), rep(0, nrow(m_mat))),
       cbind(diag(1, ncol(m_mat)), matrix(0, ncol(m_mat), nrow(m_mat)))
     )
   }
+  # Define the target outcomes (treated unit).
   bvec <- target
   if (constrained) {
+    # Add constraints on weights summing to 1 and donor weights (of which there
+    # are ncol(m_mat)) non-negative.
     bvec <- c(bvec, 1, rep(0, ncol(m_mat)))
   }
-  # solve the quadratic progamming problem for optimal weights.
-  soln <- quadprog::solve.QP(d_mat, dvec, t(a_t), bvec, meq = meq)
-  gamma <- soln$solution[seq_len(ncol(m_mat))]
+  # Solve the quadratic programming problem for optimal weights.
+  gamma <- tryCatch(
+    {
+      soln <- quadprog::solve.QP(d_mat, dvec, t(a_t), bvec, meq = meq)
+      soln$solution[seq_len(ncol(m_mat))]
+    },
+    error = function(e) {
+      # If there is an error, weight each donor equally.
+      rep(1 / ncol(m_mat), seq_len(ncol(m_mat)))
+    }
+  )
   # Return the relevant portion of the solution.
   return(gamma)
 }
@@ -364,14 +383,14 @@ EstimateGsynthSeries <- function(data_full,
 #'  from synthetic control.
 #' @param post_periods Number of periods past treatment used in counterfactual
 #'  prediction. Default = NULL means all periods after are predicted.
-#'  @inheritParams .SyntheticControlWeight
+#' @inheritParams .SyntheticControlWeight
 #' @return a scalar estimate of the counterfactual prediction for one treated
 #'  entry and the specified post treatment periods.
 .SingleSDIDPredict <- function(y_mat, t_0, pre_periods,
                                post_periods, zeta = var(as.numeric(y_mat)),
                                constrained = T) {
-  # The unit weights are only estimated once, but time weights are estimated
-  # for each period.
+  # Extract the number of entries, and store the last column (treated unit).
+  # y_mat is a number of neighbors + treated unit X period matrix.
   nn <- nrow(y_mat)
   pre <- y_mat[nn, ]
   # Use all post periods if not specified.
@@ -381,33 +400,46 @@ EstimateGsynthSeries <- function(data_full,
   # Relevant start and end time periods for prediction.
   end_t <- min(ncol(y_mat), t_0 + post_periods)
   start_t <- max(t_0 - pre_periods, 1)
-  # Unit weight computation.
+  # Unit weight per neighbor -- vector of length equal to number of neighbors.
   omega_weight <- .SyntheticControlWeight(t(y_mat[-nn, seq_len(start_t - 1)]),
-    y_mat[nn, seq_len(start_t - 1)],
-    zeta = zeta,
-    constrained = constrained
+                                          y_mat[nn, seq_len(start_t - 1)],
+                                          zeta = zeta,
+                                          constrained = constrained
   )
   # Computation of the time weights, for each post treatment period.
   # Keep time weight constrained for interpretability and avoiding overfitting.
-  for (t in start_t:end_t) {
+  for (t in seq(start_t, end_t)) {
+    # Extract the columns for all our pre-treatment periods and the target 
+    # time period, which ranges from the end of the training period to the end
+    # of the post-treatment period.
     y_t <- y_mat[, c(seq_len(start_t - 1), t)]
     tt <- ncol(y_t)
+    # Find the combination of time weights (from the training period) that best
+    # fits the target period, t.
     lambda_weight <- .SyntheticControlWeight(y_t[-nn, -tt], y_t[-nn, tt],
-      zeta = zeta,
-      constrained = T
+                                             zeta = zeta,
+                                             constrained = T
     )
+    # Compute the weights * training periods to compute the time-weighted point
+    # prediction for the treated unit and target period, t.
     sc_transpose_est <- sum(lambda_weight * y_t[nn, -tt])
+    # Compute the weighted combination of donors over all time to form the point
+    # prediction using just unit weights.
     sc_est <- sum(omega_weight * y_t[-nn, tt])
+    # Find the interaction of the weights.
     interact_est <- omega_weight %*% y_t[-nn, -tt] %*% lambda_weight
+    # Compute the final point prediction for treatment in target period t. 
+    # Append to vector of treatment unit with training data.
     pre[t] <- sc_est + sc_transpose_est - interact_est
   }
-
+  
   return(pre)
 }
 
+
 #' Main function for computing the SDID predictions of missing outcomes.
 #'
-#' @param y_df A vector of history values before treatment, and treatment time.
+#' @param y_df A dataframe of values before treatment, and treatment time.
 #' @param ct_mat Matrix with time series entries for control units.
 #' @param pre_periods Number of periods excluded from training before the
 #'  treatment period.
@@ -419,54 +451,66 @@ EstimateGsynthSeries <- function(data_full,
 #'  the optimization problem as it often fails to encompass large values (so
 #'  first scale down to smaller values and then after computation scale
 #'  up to large values).
-#' @param period Training period, ignores earliest periods.
+#' @param period Training period, ignores earliest periods in finding nearest 
+#'    neighbors based on euclidean distance, to serve as the donors.
 #'  @inheritParams .SyntheticControlWeight
 #' @return Imputed outcome prediction for the given entry.
 .SDIDPredictionHelper <- function(y_df,
                                   ct_mat,
                                   pre_periods = 0,
-                                  post_periods = 20,
+                                  post_periods = NULL,
                                   nnsize = NULL,
                                   scale = 100,
                                   period = 52,
                                   constrained = T) {
+  # TODO(alexkellogg): Consider reducing the duplicated code also in 
+  # EstimateSCMSeries.
   # Separate the treatment time and the outcome process.
   treatperiod <- y_df[1, 2]
-  y <- y_df[1:(treatperiod - 1), 1]
+  stopifnot(treatperiod > 2)
+  y <- y_df[seq(1, (treatperiod - 1)), 1]
   # Rescale the outcomes for control and treated.
+  stopifnot(scale > 0)
   y_con <- ct_mat / scale
   nc <- ncol(y_con)
   np <- nrow(y_con)
   y_pre <- c(y / scale, rep(0, np - treatperiod + 1))
-
-  # tv is a linear weight vector. Periods before treatperiod - period use
-  # zero weights.
+  
+  # tv is a linear weight vector for time. Periods before treatperiod - period
+  # use zero weights.
   # nnsize neighbours are identified using weighted distances before the
   # treatment period.
   start_period <- max(1, (treatperiod - 1) - period - 1)
   tv <- c(rep(0, start_period), seq_len(np - start_period))
+  # Matrix of the linear period weights, T X N. First start_period rows have
+  # 0 weight, remaining rows have weight 1:N.
   tmc <- t(matrix(tv, nrow = nc, ncol = length(tv), byrow = TRUE))
+  # Treatment periods have non-zero weight for control, but 0 for treatment.
   wt_y_con <- sqrt(tmc) * y_con
   wt_y_pre <- sqrt(tv) * y_pre
-
-  # If nnsize is NULL, the number of the neighbours are chosen to be close
+  
+  # If nnsize is NULL, the number of the neighbors are chosen to be close
   # to the number of periods.
   if (is.null(nnsize)) {
     nnsize <- treatperiod
   }
-  # Compute the distance between the time series and order them by distance.
+  # y_r is a T X N matrix of the time weighted treatment values (0 everywhere 
+  # except relevant pre-periods).
   y_r <- t(matrix(wt_y_pre, nrow = nc, ncol = np, byrow = TRUE))
+  # Compute the distance between the weighted control and treatment time series 
+  # in the relevant pre-periods, and order them by distance.
   e <-
     (y_r[seq_len(treatperiod - 1), ] - wt_y_con[seq_len(treatperiod - 1), ])**2
-
+  
   es <- colSums(e)
   es_order <- order(es)
-  # Combine the nearest neighbors and the treated unit, compute the predictions.
+  # Combine the nearest neighbors and the treated unit; compute the predictions.
+  # y_input is a Period X (Num Neighbors + treated unit) matrix.
   y_input <- cbind(y_con[, es_order[seq_len(min(nnsize, nc))]], y_pre)
   pred <- .SingleSDIDPredict(t(y_input), treatperiod,
-    pre_periods = pre_periods,
-    post_periods = post_periods,
-    constrained = constrained
+                             pre_periods = pre_periods,
+                             post_periods = post_periods,
+                             constrained = constrained
   )
   out <- pred * scale
   return(out)
@@ -489,7 +533,7 @@ EstimateSDIDSeries <- function(data_full,
                                outcome_var = "target",
                                counterfac_var = "counter_factual",
                                pre_periods = 0,
-                               post_periods = 20,
+                               post_periods = NULL,
                                nnsize = NULL,
                                scale = 100,
                                period = 52,
@@ -503,7 +547,6 @@ EstimateSDIDSeries <- function(data_full,
   ct_entries <- setdiff(data_full %>%
     dplyr::distinct(!!as.name(id_var)) %>%
     dplyr::pull(), tr_entries)
-
 
   # Create control data separate from the treatment.
   control_data <- data_full %>% dplyr::filter(!!as.name(id_var) %in% ct_entries)
@@ -524,7 +567,6 @@ EstimateSDIDSeries <- function(data_full,
           sum(!!as.name(treat_indicator)) + 1
     ) %>%
     dplyr::ungroup()
-
 
   # Transform the control data into matrix form for passing to helper functions.
   control_matrix <- tidyr::spread(
@@ -561,7 +603,6 @@ EstimateSDIDSeries <- function(data_full,
     constrained = constrained
   )
 
-
   # Transform the output of the SDID individual estimators (list of estimates)
   # into a single tibble, pivoting back to long form and reformatting.
   scdid_series_tib <- list_of_scdid_series %>%
@@ -586,7 +627,8 @@ EstimateSDIDSeries <- function(data_full,
     ) %>%
     dplyr::mutate(
       point.effect = response - point.pred,
-      pct.effect = (response / point.pred) - 1
+      pct.effect = ifelse(point.pred==0, NA, 
+                          (response / point.pred) - 1)
     )
   # Join in the counterfactual data and effects if desired.
   if (!is.null(counterfac_var)) {
@@ -601,8 +643,9 @@ EstimateSDIDSeries <- function(data_full,
       ) %>%
       dplyr::mutate(
         cf_point.effect = (response - !!as.name(counterfac_var)),
-        cf_pct.effect = (response / !!as.name(counterfac_var)) - 1
-      )
+        cf_pct.effect = ifelse(!!as.name(counterfac_var)==0, NA, 
+                               (response / !!as.name(counterfac_var)) - 1)
+        )
   }
   # Reorder columns for consistency across methods.
   scdid_series_tib <- scdid_series_tib %>%
@@ -680,7 +723,7 @@ EstimateSCMSeries <- function(data_full, id_var = "entry",
         dplyr::pull()
     })
   # Parallel computation of the SCM estimates, unit by unit.
-  list_inputed_y <- furrr::future_map2(
+  list_inputed_y <- purrr::map2(
     .x = split_treat_data_pre,
     .y = list_of_treat_times,
     .f = ~ .SCMImpute(
@@ -700,14 +743,16 @@ EstimateSCMSeries <- function(data_full, id_var = "entry",
     dplyr::rename(response = !!as.name(outcome_var)) %>%
     dplyr::mutate(
       point.effect = response - point.pred,
-      pct.effect = (response / point.pred) - 1
+      pct.effect = ifelse(point.pred==0, NA, 
+                          (response / point.pred) - 1)
     )
   # Compute the counterfactual effects if relevant.
   if (!is.null(counterfac_var)) {
     flex_scm_series <- flex_scm_series %>%
       dplyr::mutate(
         cf_point.effect = (response - !!as.name(counterfac_var)),
-        cf_pct.effect = (response / !!as.name(counterfac_var)) - 1
+        cf_pct.effect = ifelse(!!as.name(counterfac_var)==0, NA, 
+                               (response / !!as.name(counterfac_var)) - 1)
       )
   }
 
@@ -742,7 +787,6 @@ EstimateSCMSeries <- function(data_full, id_var = "entry",
     alphas = c(1e-4, 0.2, 0.5, 0.8, 1),
     warn = F
   )
-
   # summary(fit_enp, best.only=T)
   # Compute the predictions using the best cross-validated model.
   imputed_y <- predict(fit_enp, bigstatsr::as_FBM(control_mat))
