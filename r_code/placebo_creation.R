@@ -186,7 +186,7 @@ CreatePlaceboData <- function(data_full, id_var = "entry",
       by = c(id_var, time_var)
     )
   # If no counterfactual variable, create one in the placebo from the outcome.
-  if(is.null(counterfac_var)){
+  if(is.null(counterfac_var)) {
     placebo_df_long <- placebo_df_long %>%
       dplyr::mutate("counter_factual"=!!as.name(outcome_var))
   }
