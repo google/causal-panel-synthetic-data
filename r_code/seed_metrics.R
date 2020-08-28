@@ -14,8 +14,8 @@ pacman::p_load(dplyr, furrr, tidyr, resample, tibble)
 #'   estimated for that period over each DGP draw.
 ComputeBias <- function(att_list, horizon = c(0,4),
                         time_var="post_period_t",
-                        pred_var="observed_mean_abs_tot",
-                        counterfac_var="mean_abs_cf_tot") {
+                        pred_var="observed_mean_abs_att",
+                        counterfac_var="mean_abs_cf_att") {
   # Keep only the periods within the horizon.
   att_tib <- .ExtractSubset(att_list = att_list, horizon = horizon)
   # For each period compute the average observed ATT less the average true ATT.
@@ -36,7 +36,7 @@ ComputeBias <- function(att_list, horizon = c(0,4),
 #' @return A tibble with the period, the variance of the desired ATT (pred_var).
 ComputeVariance <- function(att_list, horizon = c(0,4),
                             time_var="post_period_t",
-                            pred_var="observed_mean_abs_tot") {
+                            pred_var="observed_mean_abs_att") {
   # Keep only the periods within the horizon.
   att_tib <- .ExtractSubset(att_list = att_list, horizon = horizon)
   # For each period compute the variance of the att estimate.
@@ -58,9 +58,9 @@ ComputeVariance <- function(att_list, horizon = c(0,4),
 #' @return A tibble with the period and the estimate coverage of the ATT CI for
 ComputeCoverage <- function(att_list, horizon = c(0,4),
                             time_var="post_period_t",
-                            counterfac_var="mean_abs_cf_tot",
-                            ub_var="jackknife_ub_mean_abs_tot",
-                            lb_var= "jackknife_lb_mean_abs_tot") {
+                            counterfac_var="mean_abs_cf_att",
+                            ub_var="jackknife_ub_mean_abs_att",
+                            lb_var= "jackknife_lb_mean_abs_att") {
   # Keep only the periods within the horizon.
   att_tib <- .ExtractSubset(att_list = att_list, horizon = horizon)
   # For each period, see how many of the sample CIs contain the truth.
@@ -84,8 +84,8 @@ ComputeCoverage <- function(att_list, horizon = c(0,4),
 #'    computed per period, for both absolute and percent ATT.
 ComputeMetrics <- function(att_list, horizon = c(0,4),
                            time_var="post_period_t",
-                           pred_var="observed_mean_abs_tot",
-                           counterfac_var="mean_abs_cf_tot") {
+                           pred_var="observed_mean_abs_att",
+                           counterfac_var="mean_abs_cf_att") {
   # Keep only the periods within the horizon.
   att_tib <- .ExtractSubset(att_list = att_list, horizon = horizon)
   # For each period compute the rmse and mae of the att estimate.

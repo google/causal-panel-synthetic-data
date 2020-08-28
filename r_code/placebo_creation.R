@@ -97,9 +97,11 @@ pacman::p_load(dplyr, tidyr, stats, tibble)
 #' @return A tibble of the same format as data_full, 
 #'    entirely consisting of donor units, some of which are placebo-treated 
 #'    (based on matching).
-#TODO(alexdkellogg):  Revisit whether pivoting will cause issues in the 
+# TODO(alexdkellogg):  Revisit whether pivoting will cause issues in the 
 #    presence of several time varying covariates.
-#TODO(alexdkellogg): Account for multiple treatments, treatment end dates.
+# TODO(alexdkellogg): Account for multiple treatments, treatment end dates.
+# TODO(alexdkellogg): Explore alternative methods of matching TS, e.g. estimated
+#    probability of having been treated given lagged outcomes (up to treatment).
 CreatePlaceboData <- function(data_full, id_var = "entry",
                               time_var = "period", 
                               treat_indicator = "treatperiod_0",
@@ -183,6 +185,10 @@ CreatePlaceboData <- function(data_full, id_var = "entry",
         dplyr::select(tidyselect::all_of(c(id_var, time_var, counterfac_var))),
       by = c(id_var, time_var)
     )
-  
+  # If no counterfactual variable, create one in the placebo from the outcome.
+  if(is.null(counterfac_var)) {
+    placebo_df_long <- placebo_df_long %>%
+      dplyr::mutate("counter_factual"=!!as.name(outcome_var))
+  }
   return(placebo_df_long)
 }

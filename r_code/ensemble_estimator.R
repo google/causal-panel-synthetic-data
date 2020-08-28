@@ -198,27 +198,27 @@ pacman::p_load(dplyr, ggplot2, quadprog, purrr, furrr, tidyr, glue, tibble)
 #' Applies the estimator associated with function name to input data.
 #'
 #' @param method_name String name for the desired method to estimate.
-#' @param placebo_data Dataset to apply the estimates to given the method.
+#' @param data_name Dataset to apply the estimates to given the method.
 #' @param ... Additional parameters to pass on to estimator, such as column
 #'    column names for the given data set (id_var, time_var).
 #'
 #' @return A long form tibble of the estimated series with imputed potential
 #'    untreated outcome for each period and treated unit.
-.PlaceboEstimator <- function(method_name, 
-                              placebo_data, ...) {
+.MethodEstimator <- function(method_name, 
+                              data_name, ...) {
   stopifnot(method_name %in%
               c("CausalImpact", "Gsynth", "SDID", "SDID_Uncon", "SCM"))
   # Define the estimator call, and apply.
   # MC and SDID Unconstrained are exceptions to the rule (no unique function).
   if (method_name == "MC") {
-    return(EstimateGsynthSeries(placebo_data, estimator = "mc", ...))
+    return(EstimateGsynthSeries(data_name, estimator = "mc", ...))
   }
   if (method_name == "SDID_Uncon") {
-    return(EstimateSDIDSeries(placebo_data, constrained = F, ...))
+    return(EstimateSDIDSeries(data_name, constrained = F, ...))
   }
   # Define the call to the function based on method name, and cal.
   estimator_call <- paste0("Estimate", method_name, "Series")
-  est_out <- do.call(estimator_call, list(placebo_data, ...))
+  est_out <- do.call(estimator_call, list(data_name, ...))
   return(est_out)
 }
 
@@ -284,7 +284,7 @@ EstimateEnsemble <- function(method_names,
   EstimateSCMSeries
   # Map the desired (default) estimators onto the placebo set.
   estimates_list <- furrr::future_map(
-    .x = method_names, .f = .PlaceboEstimator,
+    .x = method_names, .f = .MethodEstimator,
     placebo_data = placebo_data, id_var = id_var, time_var = time_var,
     outcome_var = outcome_var, treat_indicator = treat_indicator,
     counterfac_var = counterfac_var
