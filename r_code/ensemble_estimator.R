@@ -204,7 +204,7 @@ pacman::p_load(dplyr, ggplot2, quadprog, purrr, furrr, tidyr, glue, tibble)
 #'
 #' @return A long form tibble of the estimated series with imputed potential
 #'    untreated outcome for each period and treated unit.
-.PlaceboEstimator <- function(method_name, 
+.MethodEstimator <- function(method_name, 
                               placebo_data, ...) {
   stopifnot(method_name %in%
               c("CausalImpact", "Gsynth", "SDID", "SDID_Uncon", "SCM"))
@@ -284,7 +284,7 @@ EstimateEnsemble <- function(method_names,
   EstimateSCMSeries
   # Map the desired (default) estimators onto the placebo set.
   estimates_list <- furrr::future_map(
-    .x = method_names, .f = .PlaceboEstimator,
+    .x = method_names, .f = .MethodEstimator,
     placebo_data = placebo_data, id_var = id_var, time_var = time_var,
     outcome_var = outcome_var, treat_indicator = treat_indicator,
     counterfac_var = counterfac_var
