@@ -131,47 +131,37 @@ DebiasedATT <- function(raw_data, method_name, num_placebos = 50,
     dplyr::filter(Treated == 0) %>%
     dplyr::count() %>%
     dplyr::pull()
-  # Split the data cleanly if we have 5x donors relative to treated.
-  if (num_donors / num_treated >= 5) {
-    # Allot 3*num_treated for the independent placebo.
-    # With 5x or more, this will leave donors >= 2*num_treated in the true data.
-    for_placebo <- .SelectDonorIDs(
-      raw_data = raw_data,
-      treated_ids = treated_ids,
-      id_var = id_var,
-      num_slice = 3 * num_treated,
-      frac_treated = 1
-    )
-    placebo_temp <- CreatePlaceboData(for_placebo)
-    true_subset <- raw_data %>%
-      dplyr::anti_join(placebo_temp, by = c(id_var, time_var))
-    list_out <- list(placebo_temp, true_subset)
+  # Split the data cleanly if we have adequate data.
+  true_full_ind <- NULL
+  if (num_donors / num_treated >= 5 ) {
+    num_slice <- 3 * num_treated
+    frac_treated <- 1
   } else if (num_donors / num_treated >= 3) {
-    # Only use half the treated, and assign num_treated donors for the placebo.
-    # This will yield a 1.5x ratio in the true data, 2x ratio in the placebo.
-    for_placebo <- .SelectDonorIDs(
-      raw_data = raw_data,
-      treated_ids = treated_ids,
-      id_var = id_var, num_slice = num_treated,
-      frac_treated = 0.5
-    )
-    placebo_temp <- CreatePlaceboData(for_placebo)
-    true_subset <- raw_data %>%
-      dplyr::anti_join(placebo_temp, by = c(id_var, time_var))
-    list_out <- list(placebo_temp, true_subset)
+    num_slice <- num_treated
+    frac_treated <- 0.5
   } else {
-    for_placebo <- .SelectDonorIDs(
-      raw_data = raw_data,
-      treated_ids = treated_ids,
-      id_var = id_var, num_slice = num_donors,
-      frac_treated = 1
-    )
-    placebo_temp <- CreatePlaceboData(for_placebo)
-    true_subset <- raw_data
-    list_out <- list(placebo_temp, true_subset)
+    # If we do not have adequate data, create a placebo with the full raw data.
+    # Output warning to user as well.
+    num_slice <- num_donors
+    frac_treated <- 1
+    # Set flag that true_subset should be the full data.
+    true_full_ind <- 1
     warning("Too few donor units relative to treated units to create an
             independent placebo set. Debiasing may suffer as a result.")
   }
+  for_placebo <- .SelectDonorIDs(raw_data = raw_data, 
+                                 treated_ids = treated_ids,
+                                 id_var = id_var, 
+                                 num_slice = num_slice,
+                                 frac_treated = frac_treated)
+  placebo_temp <- CreatePlaceboData(for_placebo)
+  if (!is.null(true_full_ind)) {
+    true_subset <- raw_data
+  } else{
+    true_subset <- raw_data %>%
+      dplyr::anti_join(placebo_temp, by=c(id_var, time_var))
+  }
+  list_out <- list(placebo_temp, true_subset)
   names(list_out) <- c("placebo", "true")
   return(list_out)
 }
@@ -190,14 +180,15 @@ DebiasedATT <- function(raw_data, method_name, num_placebos = 50,
 #'    information for each selected observation over time.
 .SelectDonorIDs <- function(raw_data, treated_ids, id_var, num_slice,
                             frac_treated) {
+  # Slice sample of donor IDs, defaults to without replacement.
   set_aside_ids <- treated_ids %>%
     dplyr::filter(Treated == 0) %>%
     dplyr::distinct(!!as.name(id_var)) %>%
     dplyr::slice_sample(n = num_slice) %>%
     dplyr::bind_rows(treated_ids %>%
-      dplyr::filter(Treated == 1) %>%
-      dplyr::distinct(!!as.name(id_var)) %>%
-      dplyr::slice_sample(prop = frac_treated))
+    dplyr::filter(Treated == 1) %>%
+    dplyr::distinct(!!as.name(id_var)) %>%
+    dplyr::slice_sample(prop = frac_treated))
 
   for_placebo <- set_aside_ids %>%
     dplyr::inner_join(raw_data)
@@ -252,12 +243,12 @@ DebiasedATT <- function(raw_data, method_name, num_placebos = 50,
   )
   jk_comp_ci <- .FormatJackknife(
     jk_est = jk_comp_abs, ci_in = alpha_ci, col_name =
-      paste(effect_type, "_abs_att", sep = ""), range = post_range
+      paste0(effect_type, "_abs_att"), range = post_range
   ) %>%
     dplyr::inner_join(
       .FormatJackknife(
         jk_est = jk_comp_pct, ci_in = alpha_ci, col_name =
-          paste(effect_type, "_pct_att", sep = ""), range = post_range
+          paste0(effect_type, "_pct_att"), range = post_range
       ),
       by = "post_period_t"
     ) %>%
@@ -348,6 +339,8 @@ DebiasedATT <- function(raw_data, method_name, num_placebos = 50,
 #'    and percent effects, and a message informing the user of the winner.
 # TODO(alexdkellogg): Could create a similar function that instead returns
 # a table with Bias, RMSE, coverage of each method on placebo draws?
+# TODO(alexdkellogg): Append with "break" functionality if the data fails 
+# diagnostic tests (t-test table, or KL metric on feature density).
 AutoEstimator <- function(raw_data, method_names,
                           num_placebos = 50, sd_placebo = 0.2,
                           horizon = c(0, 4), effect_type = "mean",
@@ -359,7 +352,8 @@ AutoEstimator <- function(raw_data, method_names,
   # Ensure the method names are entered appropriately.
   stopifnot(method_names %in%
     c("CausalImpact", "Gsynth", "SDID", "SDID_Uncon", "SCM"))
-  # Make sure horizon is positive. Some methods have 0 training error is why.
+  # Make sure horizon is positive. Some methods have 0 training error, so 
+  # including negative horizon is neither useful nor comparable across methods.
   stopifnot(0 <= horizon[1] & horizon[1] <= horizon[2])
   # Bug in future library requires calling function names to have them
   # recognized as functions in each parallel instance.
