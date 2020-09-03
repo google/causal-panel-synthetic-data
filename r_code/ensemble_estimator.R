@@ -284,11 +284,10 @@ EstimateEnsemble <- function(method_names,
   EstimateSCMSeries
   # Map the desired (default) estimators onto the placebo set.
   estimates_list <- furrr::future_map(
-    .x = method_names, .f = .MethodEstimator,
-    placebo_data = placebo_data, id_var = id_var, time_var = time_var,
+    .x = method_names, .f = ~.MethodEstimator( method_name = .x,
+    data_name = placebo_data, id_var = id_var, time_var = time_var,
     outcome_var = outcome_var, treat_indicator = treat_indicator,
-    counterfac_var = counterfac_var
-  )
+    counterfac_var = counterfac_var))
   names(estimates_list) <- method_names
   # Create the default counterfactual variable, which exists in placebo data.
   temp_cf <- ifelse(is.null(counterfac_var), "counter_factual", counterfac_var)

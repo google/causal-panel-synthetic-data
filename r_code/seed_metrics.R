@@ -17,7 +17,8 @@ ComputeBias <- function(att_list, horizon = c(0,4),
                         pred_var="observed_mean_abs_att",
                         counterfac_var="mean_abs_cf_att") {
   # Keep only the periods within the horizon.
-  att_tib <- .ExtractSubset(att_list = att_list, horizon = horizon)
+  att_tib <- .ExtractSubset(att_list = att_list, time_var = time_var,
+                            horizon = horizon)
   # For each period compute the average observed ATT less the average true ATT.
   bias_tib <- att_tib %>%
     dplyr::group_by(!!as.name(time_var)) %>%
@@ -38,7 +39,8 @@ ComputeVariance <- function(att_list, horizon = c(0,4),
                             time_var="post_period_t",
                             pred_var="observed_mean_abs_att") {
   # Keep only the periods within the horizon.
-  att_tib <- .ExtractSubset(att_list = att_list, horizon = horizon)
+  att_tib <- .ExtractSubset(att_list = att_list, time_var = time_var,
+                            horizon = horizon)
   # For each period compute the variance of the att estimate.
   var_tib <- att_tib %>%
     dplyr::group_by(!!as.name(time_var)) %>%
@@ -62,7 +64,8 @@ ComputeCoverage <- function(att_list, horizon = c(0,4),
                             ub_var="jackknife_ub_mean_abs_att",
                             lb_var= "jackknife_lb_mean_abs_att") {
   # Keep only the periods within the horizon.
-  att_tib <- .ExtractSubset(att_list = att_list, horizon = horizon)
+  att_tib <- .ExtractSubset(att_list = att_list, time_var = time_var,
+                            horizon = horizon)
   # For each period, see how many of the sample CIs contain the truth.
   coverage_out <- att_tib %>%
     dplyr::group_by(!!as.name(time_var)) %>%
@@ -87,7 +90,8 @@ ComputeMetrics <- function(att_list, horizon = c(0,4),
                            pred_var="observed_mean_abs_att",
                            counterfac_var="mean_abs_cf_att") {
   # Keep only the periods within the horizon.
-  att_tib <- .ExtractSubset(att_list = att_list, horizon = horizon)
+  att_tib <- .ExtractSubset(att_list = att_list, time_var = time_var,
+                            horizon = horizon)
   # For each period compute the rmse and mae of the att estimate.
   metrics_tib <- att_tib %>%
     dplyr::group_by(!!as.name(time_var)) %>%
@@ -113,7 +117,8 @@ ComputeMetrics <- function(att_list, horizon = c(0,4),
 #'
 #' @return A tibble, combining the list of data from input and returning just
 #'    the relevant periods of time with respect to treatment defined by horizon.
-.ExtractSubset <- function(att_list, horizon = c(0, 4)) {
+.ExtractSubset <- function(att_list, time_var = "post_period_t",
+                           horizon = c(0, 4)) {
   stopifnot(length(horizon) == 2 & horizon[1]<= horizon[2])
   # Keep only the periods within the horizon.
   att_tib <- att_list %>%

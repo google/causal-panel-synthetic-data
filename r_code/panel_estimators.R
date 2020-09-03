@@ -778,6 +778,8 @@ EstimateSCMSeries <- function(data_full, id_var = "entry",
 #'
 #' @return Predicted series of the outcome for the treated unit (over all time)
 #'    based on Elastic Net Penalty trained on the pre period data.
+# TODO(alexdkellogg): Change up bigSpLinReg to glmentUtils::cva function
+# due to as_FBM() not being compatible with looping in the benchmarking.
 .SCMImpute <- function(treat_data, control_mat, treat_time) {
   # Define the control data matrix for the training period.
   control_pre <- control_mat[seq_len(treat_time - 1), ]
