@@ -723,7 +723,7 @@ EstimateSCMSeries <- function(data_full, id_var = "entry",
         dplyr::pull()
     })
   # Parallel computation of the SCM estimates, unit by unit.
-  list_inputed_y <- purrr::map2(
+  list_imputed_y <- purrr::map2(
     .x = split_treat_data_pre,
     .y = list_of_treat_times,
     .f = ~ .SCMImpute(
@@ -735,7 +735,7 @@ EstimateSCMSeries <- function(data_full, id_var = "entry",
   # Combine the list of estimated series into a dataframe, compute effects.
   flex_scm_series <- Map(
     dplyr::bind_cols, treat_data %>% split(.[[id_var]]),
-    lapply(list_inputed_y, function(x) {
+    lapply(list_imputed_y, function(x) {
       return(tibble::tibble("point.pred" = x))
     })
   ) %>%
