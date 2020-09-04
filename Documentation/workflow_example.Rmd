@@ -1,0 +1,220 @@
+---
+title: 'Code Workflow Example (Draft)'
+output:
+  pdf_document: 
+    latex_engine: xelatex
+  bookdown::html_document2: default
+  html_document:
+    df_print: paged
+  word_document: default
+header-includes:
+- \usepackage{caption}
+params:
+   test_data: TRUE
+   compute_estimates: TRUE
+   use_ensemble: TRUE
+   plot_results: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(dplyr, furrr,here,tictoc, gt, ggplot2, gridExtra, knitr,
+               stringr, tidyr)
+r_main_files<- list.files(here::here("r_code"))
+r_main_files <-  r_main_files[!grepl("Rmd", r_main_files)]
+r_main_files <- paste(here::here("r_code",r_main_files))
+sapply(r_main_files, source, .GlobalEnv)
+
+plan(multiprocess, workers=availableCores()-2)
+set.seed(1982)
+units=300
+sim_data <- SyntheticDGP(num_entries = units, prop_treated = 0.2,
+                         treat_impact_mean = 0.35, treat_decay_mean=1) %>% 
+  FormatForEst()
+selection_data <- SyntheticDGP(num_entries = units, prop_treated = 0.2, 
+                               loading_scale = 0.9) %>% FormatForEst()
+```
+
+
+## Pre-processing Notes
+This document provides an overview of how to estimate causal impacts on long-T panel data by stringing together functions in this repository. The input data to estimate should be a long form tibble or dataframe, meaning each row contains information about a unique unit-time combination and each unit's series should be complete so that every unit has an observed value at every period in the data. Some pre-processing might be needed to get data into this form -- namely removing NAs as well as time periods that only contain data from a subset of the units. See ?pivot_longer in R for helpful documentation in how to take wide data to long.
+
+Once the data is in the correct form, there are a few more convenience items to optionally take care of. The analysis requires variables (columns in the tibble) identifying the unit ID (by default, searches for "entry"), the time ID ("period", which would ideally be recoded to range from 1 to T), a treatment indicator for each unit by time combination (by default, "treatperiod_0"), an outcome variable (the observed outcome, default "target"), and if it exists, a counterfactual outcome for that unit time combination ("counter_factual"). Should you decide to change the column names to these defaults, you will not need to specify the names when calling the pre-estimation plotting and estimation functions. Because the first set of estimator functions output a long-form tibble with point predictions and CI bands for each unit-time combination, the names of newly created columns in these output tibbles will automatically be the default for functions called later in the workflow.
+
+The set of estimators implemented in this repository share a common structure in that they find a set of control units (sometimes called donors) that emulate a particular treatment unit, and use this donors to answer "what would have happened to this treatment unit had it not been treated"; this is known as imputing the unobserved potential outcome of the treated unit. Then, by comparing the actual outcome of the treated unit to this predicted counterfactual outcome (the imputed value based on donors), we calculate a treatment effect -- how much and in which direction did the treatment impact the unit relative to where we estimate it otherwise would've been. 
+
+In order to convince ourselves that the estimators are able to adequately impute this missing outcome, we must carefully consider a set of practical assumptions underlying this analysis^[For technical assumptions, please review our sister paper on benchmarking the methods in this repository (LINK).]: 1) Do the treated units have similar outcome series as the control units? 2) Do we expect the treatment effect to be large enough to detect, given the variability of the series? 3) Do we have any reason to believe that some of the controls have suffered large idiosyncratic shocks during the relevant periods? 4) Could the treated units have anticipated the intervention? 5) Could there be spillover effects from treated units onto others? 6) Are there enough pre-treatment periods to be confident that our donors will provide a good approximation? Reflecting on these questions prior to estimating the models is recommended, and the following sub-section provides some concrete steps in that direction.
+
+## Sanity Checks 
+Although the particular answers to the above questions will vary by context, there are a few commands we recommend plotting prior to proceeding with estimation. Borrowing from Hyndman (TS Features), *TSFeaturesPlot* and *TSFeatureTest* provide complementary approaches for understanding how different the treatment and control time series are by feature. There are a large number of time series features (e.g. auto-correlation, seasonality, entropy) that are computed within these functions, and *TSFeaturesPlot* produces a scatter plot of the first two principle components of these features by treatment status while *TSFeatureTest* produces a table of t-tests on the null hypothesis that the features in the two groups are the same. To examine the distribution of a particular feature (perhaps to get a sense of whether to trim extreme values), the *FeatureDensity* function takes the relevant feature and dataset as input and returns a group density.  The code below produces an example of these plots in two different dataset from our *SyntheticDGP* method -- one with selection and one without. The plots demonstrate that the features of the treatment group seem fairly well covered despite the selection problem in the second data, but the hypothesis tests suggest we can reject the null of no difference between certain features among the two groups.
+
+```{r ts-viz}
+TSFeaturesPlot(sim_data)
+TSFeaturesPlot(selection_data)
+
+TSFeatureTest(sim_data) %>% dplyr::select(-c(group1, group2))
+TSFeatureTest(selection_data) %>% dplyr::select(-c(group1, group2))
+
+FeatureDensity(sim_data)
+FeatureDensity(selection_data)
+```
+
+A more extreme example is run below, displaying a case where these methods are not advisable without modifications. Here, the autocorrelation of the control units is drawn from a distribution quite separate from that of the treatment group (as is the distribution of the factor loading -- the same selection as above.)
+```{r ts-viz-failure}
+inappropriate_data <- 
+  SyntheticDGP(num_entries = units, prop_treated = 0.2, 
+               loading_scale = 0.9, rho_shift=0.05, rho_scale=0) %>% 
+  FormatForEst()
+TSFeaturesPlot(inappropriate_data)
+TSFeatureTest(inappropriate_data) %>% dplyr::select(-c(group1, group2))
+FeatureDensity(inappropriate_data)
+```
+
+Another couple of visualizations are borrowed from the panelView library -- which is loaded in with gsynth. The panelView function has an option to create a grid of dates and units to highlight the number of treated units as well as the number of pre and post treatment periods. Alternatively, the output can be specified as a plot of the raw time series, highlighting the treatment observations. This can be useful for visualizing whether the treatment units seem systematically different than the donors. Both are shown below, again demonstrated for the advisable and inadvisable cases.
+
+```{r panel-view}
+require(panelView)
+panelView(target~treatperiod_0, 
+          data=sim_data %>% filter(entry %in% c(sample(1:units, 30),192), 
+                                   period %in% 1:90) %>% 
+            mutate(target=ifelse(entry==192 & period<20, NA, target)) %>%
+            as.data.frame(), 
+          index=c("entry", "period"),
+          pre.post = TRUE, by.timing = TRUE)
+panelView(target~treatperiod_0, data=sim_data %>% 
+            filter(entry %in% sample(1:units, 45)) %>% 
+            as.data.frame(), 
+          index=c("entry", "period"),
+          type = "outcome")
+panelView(target~treatperiod_0, data=inappropriate_data %>% 
+            filter(entry %in% sample(1:units, 45)) %>% 
+            as.data.frame(), index=c("entry", "period"),
+          type = "outcome")
+```
+
+The panelView grid output displays that there are a large number of pre-treatment periods among our treated units, and can also be used to display missing data if desired (example shown for entry 486). The raw outcome series plots show that, while there are some treated series with larger magnitude than any of the controls in the advisable scenario, the trend and variance levels seem fairly similar across the groups, so our data seem suitable for these methodologies.^[In the original Synthetic Control Method approach, the outcome series would have to fall into the convex hull of the donor units, so that being everywhere larger would be problematic. However, the use of an intercept term in the models relaxes this assumption. See Doudchenko and Imbens (2017) and Abadie (2019) for a discussion.] In the second case, despite the fact that the treated series have similar magnitudes as the donor series, we observe that they are much more volatile, which could lead to imputation problems as the series appear fundamentally different by treatment.^[NOTE TO SELF: do we have a recommended action in this scenario?]
+
+## Imputation of Unobserved Potential Outcomes
+
+Once we have convinced ourselves that this suite of methods is appropriate in the context of our data, we proceed to the next step in the workflow: estimating the optimal combination of donor units to predict the outcome of our treated units had they not been treated. Each of the methods in the repository do just that, with their own distinct flavor.^[To learn more about the methods themselves, consider reading our sister paper (LINK).] The advantage of our repo, as opposed to loading and calling the functions from the packages directly (which exists for Gsynth/MC, SDID and Causal Impact - both of which currently only handle one treated observation, and SDID has further restrictions at the time of writing) is that our wrapper functions standardize the input and output across these methods, allowing for easier comparison and less pre-processing time. 
+
+The Gsynth Interactive Fixed Effects (IFE) estimator, one of the favored methods in the benchmarking study, is implemented in the code below. The wrapper to "gsynth()" implemented below can handle a large number of unnamed arguments (examples include the number of factors and the information criteria to select among factors); for more information on which arguments exist, please review the ?gsynth documentation. The calls to other estimation methods follow a similar form, and are included in the snippet below. Several of the estimators have options for additional parameters: CausalImpact can in principle handle user-specified additions in the form of Bayesian Structural Time Series parameters, as well as training period input (neither is currently supported in our wrapper, though it's on the TODO list); SDID has options for constrained vs unconstrained optimization of the unit weights (which can be useful for taking advantage of negative correlations between series with negative weights) as well as arguments for the number of donors to consider (by Euclidean distance), and the number of pre-periods to train on.^[See Doudchenko and Imbens, 2017 for further discussion on the trade-offs between constrained and unconstrained weights in SCM methods more generally.] The SCM implementation in our repository by default adopts the most flexible approach discussed in Doudchenko and Imbens (2017), employing an intercept term and elastic net penalty (CITE TIBSHIRANI ET AL) over a speedy grid search (implemeted by ?bigstatsr) to determine the optimal donor weights for each unit.
+
+```{r gsynth-impute-ex, eval=TRUE}
+# Sequential estimation of Gsynth IFE on two data sets.
+gsynth_demo <- EstimateGsynthSeries(sim_data)
+gsynth_inapp_demo <- EstimateGsynthSeries(inappropriate_data)
+
+#To parallelize over several data sets:
+# sdid_list <- furrr::future_map(.x=list(sim_data, inappropriate_data),
+#                                .f=EstimateSDIDSeries)
+sdid_demo <- EstimateSDIDSeries(sim_data)
+sdid_uncon_demo <- EstimateSDIDSeries(sim_data, constrained = F)
+scm_demo <- EstimateSCMSeries(sim_data)
+causalimpact_demo <- EstimateCausalImpactSeries(sim_data)
+
+head(gsynth_demo)
+```
+
+A subset of the resulting tibble is shown below, with reassigned column names of *response* for the actually observed outcome (was *target* before), the *point.pred* as our imputed estimate, *Treatment_Period* for the time in which the treatment is impemented for the given unit. There are also columns for the *point.effect* and *pct.effect*, and in this example (because we have the true counterfactual outcome we are hoping to impute) we have columns for *counter_factual*, *cf_point.effect*, and *cf_pct.effect* which have the true point-wise treatment effects.
+
+Individual imputations in hand, we can plot the true outcome series atop the predicted outcome series for a sampling of our treated units to get a sense of well the donor-combined predictions are tracking the outcomes in the pre-period. The code below takes the estimated series and plots the 3 largest treated series (by first period outcome) and a random sample of 3 additional treated series to get a visual sense. As demonstrated in the plots, the Gsynth IFE estimates on the data that is deemed appropriate for these methods track the outcome quite closely in the pre-treatment periods whereas the estimates on the data less-adviseable for these methods struggles to impute the values because the series between treated and control have quite distinct patterns.
+```{r indiv-series-ex, eval= TRUE}
+AssortedSeriesPlot(gsynth_demo)
+AssortedSeriesPlot(gsynth_inapp_demo)
+```
+
+While the pre-period tracking is a good first sign, it's also important to ensure we are not overfitting in these pre-treatment periods. To get a sense of this, one approach is to create a placebo data set and generate estimates of the pre and post *placebo-treatment* periods. Our *CreatePlaceboData* function finds a set of donor units that are most similar to our actually treated units (in terms of the Euclidean distance between the time series), and assigns those units a *placebo-treatment* taking place in the same time period as the intervention for the actual treated unit it is matched to. The creation of an appropriate placebo is particularly important because we rely on the placebo dataset to understand whether we are overfitting, and later, to get a sense of how biased our estimators might be. With this data set formed and subsequently estimated, we can examine the individual series plots and see whether the model accurately imputes the outcome in both the pre and post treatment periods (because the true treatment effect here is known to be 0). The code below outlines this process, with resulting plots that reassure us (at least for the first several post-treatment periods) that we are not simply overfitting to the pre-intervention data.
+
+```{r placebo-overfit}
+sim_data_placebo <- CreatePlaceboData(sim_data)
+gsynth_placebo_demo <- EstimateGsynthSeries(sim_data_placebo)
+AssortedSeriesPlot(gsynth_placebo_demo)
+```
+
+
+## Estimation of Average Treatment Effects
+The next set of functions in the workflow estimate the treatment effect of interest (typically the Average Treatment Effect on the Treated in post-treatment period $t$, though we also handle the median). These functions essentially take in the individual point-effects for each unit, map them to a post-treatment period, and average them over these post-treatment periods using jackknife resampling -- giving us confidence bounds (CITE JACKKNIFE PAPER).^[We are aware that the jackknife method is not ideal for this type of inference as the estimate treatment effects across each of the units are not realistically independent. We are planning to implement a conformal inference procedure following Chernozhukov et al (2019), which has a number of enticing properties and seems to be the best and most broadly applicable approach to estimating CIs/p-values in this framework.]  
+
+```{r att-estimates, warning=FALSE}
+gsynth_demo_att <- ComputeTreatmentEffect(gsynth_demo)
+sdid_demo_att <- ComputeTreatmentEffect(sdid_demo)
+sdid_uncon_demo_att <- ComputeTreatmentEffect(sdid_uncon_demo)
+scm_demo_att <- ComputeTreatmentEffect(scm_demo)
+causalimpact_demo_att <- ComputeTreatmentEffect(causalimpact_demo)
+
+head(gsynth_demo_att %>% filter(post_period_t>=0))
+```
+
+The output tibble of from *ComputeTreatmentEffect* contains columns for the time relative to treatment (*post_period_t*, which can be specified but by default ranges from large negative to large positive values); the number of treated units in that period (*treated_n* -- this informs us as to how many units we are estimating the treatment effect off of); jackknifed estimates of the lower and upper CI bounds (95% default) on the treatment effect of interest alongside the jackknifed and observed treatment effect (these should be equal in means, but may differ for medians). These jackknifed estimates are computed for both absolute treatment effects and percent treatment effects. Lastly, if the data exist (e.g. in the placebo data), the tibble will contain a column for the true treatment effect by comparing the observed treated outcome to the (unobservable) counterfactual outcome. 
+
+This treatment effect tibble is more easily understood in graphical form, which can easily be created using the *GapPlot* function within the repo.^[There's also *IndividualPlotter*, which works much like the *AssortedSeriesPlot* above but takes as input the particular ID number of the unit of interest.] Because we generally cannot observe the counterfactual (potential untreated) outcome of the treated units unless we have synthetic data (which we are using here), we rely on the placebo ATT estimates to give us a sense of whether our method is biased. The plots below depict a grid of ATT plots for the several methods we have discussed; note that in this case, we make use of the true (typically unobservable) counterfactual to demonstrate that each method is able to accurately recover the treatment effect. However, the plot for the Gsynth estimates of the placebo ATT, which we would typically use to reassure ourselves of limited bias, are also presented.
+
+```{r att-gap-plot, warning=FALSE}
+gap_plot_list <- furrr::future_map2(.x=list(gsynth_demo_att,sdid_demo_att,
+                                            sdid_uncon_demo_att,scm_demo_att,
+                                            causalimpact_demo_att),
+                                    .y=list("Gsynth", "SDID", 
+                                            "SDID Unconstrained", "SCM",
+                                            "Causal Impact"),
+                                    .f=~GapPlot(att_tib=.x,
+                                                plot_title=.y,
+                                                plot_y_lab="ATT"))
+  
+  
+att_grid_out <- ggpubr::ggarrange(
+  plotlist = gap_plot_list, ncol = 2, nrow = 3,
+  common.legend = TRUE, legend = "bottom"
+)
+ggpubr::annotate_figure(att_grid_out, top = text_grob(
+    paste("ATT Gap Plots")
+  )) %>% print()
+
+gsynth_placebo_demo %>% 
+  ComputeTreatmentEffect() %>%
+  GapPlot(plot_title="Placebo ATT Gsynth",
+          plot_y_lab="ATT")
+```
+
+## Ensembling the Estimators
+An additional feature in this repository is the functionality for an ensemble estimator. In particular, this can be implemented after estimating the imputed series (*EstimateXSeries* above) by calling *EstimateEnsemble*. This function works by first creating a placebo data set from the raw data,^[The placebo is currently not independent of the donor pool for the treated units, which can cause issues in estimating the CI for the ensemble.] applying each of the methods to this placebo data and extracting the point predictions for each treated series, then finding the optimal combination of weights that minimize the Mean Squared Error between the actual post-treatment outcome and the combined prediction (with options for an intercept term, constraints so that the weights both sum to 1 and are non-negative, and the choice of whether to find a set weights for each unit or one set of weights for the whole data).^[Potential extension --- would using 50 draws from the placebo help at all? Would that allow us to get better inference/variance? Would this help with reducing the noise from the weights, if we average the weights over the 50 draws??] Once this ensemble is estimated, it can be treated just like the EstimateXSeries output for any of the other methods, so that ensemble treatment effects and CIs can be computed and plotted.
+
+Shown next is the code to estimate the ensemble. It takes as arguments the name of the methods (must be specified as the X in EstimateXSeries --- e.g. "Gsynth"), the raw data, and a list combining the estimated series (ideally, in the order that the methods are named).
+
+```{r housecleaning, echo=FALSE}
+EstimateBARTSeries <- function(){ NULL}
+EstimateGfooSeries <- function(){ NULL}
+```
+
+```{r ensemble-ex, warning=FALSE}
+# Bug: When num_methods > num_cores, it loses the definition of the function.
+plan(sequential, workers=availableCores()-2)
+EstimateEnsemble(method_names = c("Gsynth", "SDID", "SCM"),
+                 true_data = sim_data,
+                 pred_list = list(
+                   gsynth_demo, sdid_demo, scm_demo
+                 )) %>%
+  ComputeTreatmentEffect() %>%
+  GapPlot(plot_title = "Ensemble ATT", plot_y_lab = "ATT")
+
+```
+
+
+## Debiased ATT
+We implement a debiased ATT estimator by taking advantage of the ATT estimate among the placebo group and using that to adjust the ATT estimates on our true data.^[Importantly, to achieve proper CI and de-biasing, we would ideally separate the placebo set from the donor set prior to estimating either. This may not always be computationally feasible, especially in cases where there are only a few donor units relative to treated units. In these cases, we can use the same set of data for both, but we must recognize that this may not provide us with much of a correction, and could potentially lead to worse estimates because the of the noise in the placebo modelling.] This is implemented by identifying the set of data we will use for our placebo experiment, shocking these data with noise over a user-inputted number of seeds (e.g. 50 seeds will create 50 placebo data sets, each with slightly different outcome processes due to the iid noise), and estimating the ATT for each of these placebo data. Then, after estimating the ATT for the true data, we can compute a debiased ATT series by computing the difference between the true ATT and the placebo ATT for each data set (where placebo ATT is really the estimator bias in that data). We then find the mean of this debiased ATT over the data sets, and compute confidence intervals by jackknifing.
+
+```{r debias-ex, warning=FALSE}
+plan(sequential, workers=availableCores()-2)
+DebiasedATT(raw_data = sim_data, method_name = "SDID", num_placebos = 10) %>%
+  GapPlot(plot_title = "Debiased SDID ATT", plot_y_lab = "ATT")
+
+```
+
+
+## Auto Estimate
+For convenience, we provide a function that automatically determines the optimal method given the particular user inputted data (and the desired methods to try). Once again, this method relies heavily on the placebo treatment assignment generated based on the true data --- if the two are very similar, we can be more confident that the optimal method on the placebo data is likely the optimal method on the true data. In particular, taking a string of method names, the function generates a large number of placebo data and estimates (in parallel, for computational benefit) each method on each placebo dataset. Currently, the average mean squared error across the data sets (for a given horizon) is the criteria by which we determine the best method.^[We could also think about bias, though naively averaging the bias can be problematic as bias of -10 in time 1 and 10 in time 2 would look quite good. Perhaps take the average of the squared or absolute bias.] Future iterations will consider bias and perhaps even coverage, as this is often quite important in applied settings. Moreover, we plan to break the execution of the auto-estimator if certain diagnostic tests --- introduced in the first stages of the workflow --- are not adequately met (e.g. density of several features is quite different; inadequate coverage with respect to the PC plots; too many t-test are failed). ^[Thanks Jarod M for the suggestion.] 
+
+The output of this function is a predicted series of imputations (which can be passed on to the treatment effect or plots --- it's the equivalent of *gsynth_demo*) as well as a message specifying the best method given the parameters (number of placebos, horizon, metric --- RMSE for now). An example of a call to this function is shown below.
+```{r auto-ex, warning=FALSE}
+AutoEstimator(raw_data = sim_data, method_names = c("Gsynth", "SDID"), num_placebos = 10) 
+```
